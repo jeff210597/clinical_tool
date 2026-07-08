@@ -287,6 +287,51 @@ button:disabled {
   color: var(--warn);
 }
 
+.patient-window-tabs {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  margin: 16px 0 0;
+  padding-bottom: 2px;
+}
+
+.patient-window-tab {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #f8fafc;
+  overflow: hidden;
+}
+
+.patient-window-tab.is-active {
+  border-color: #99f6e4;
+  background: #ccfbf1;
+}
+
+.patient-window-switch,
+.patient-window-close {
+  min-height: 34px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.patient-window-switch {
+  max-width: 220px;
+  padding: 0 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.patient-window-close {
+  width: 34px;
+  border-left: 1px solid var(--line);
+  color: var(--muted);
+}
+
 .tabs {
   display: flex;
   gap: 4px;

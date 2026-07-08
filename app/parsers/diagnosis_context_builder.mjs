@@ -1,207 +1,274 @@
-const NEGATIVE_OR_EMPTY = /^(無|沒有|不詳|否|nil|none|n\/a|unknown|無有|無 不詳 有)$/i;
-const NOISE_WORDS = /^(內科病史|外科病史|其他病史|過敏史|家族病史)\s*[:：]?\s*(無|不詳|有|\s)*$/;
-const FIELD_NOISE = /^(內科病史|外科病史|其他病史|過敏史|家族病史)(無|不詳|有)*$/;
-const PROCEDURE_NOISE = /\b(?:port\s*a|chest\s*pa|echocardiography|m-mode|sector|ct|sono|ekg|ng|nasogastric|endo(?:tracheal)?|cvc|central venous|foley|catheter|tube|intubation|insertion)\b/i;
+const DIAGNOSIS_RULES = [
+  {
+    key: "colorectal_cancer",
+    label: "Rectal/colorectal cancer",
+    test: /colorectal|rectal|colon|sigmoid|rectosigmoid|adenocarcinoma|carcinoma|malignan|大腸癌|直腸癌|結腸癌/i,
+    procedure: /LAR|low anterior resection|colectomy|resection|robotic|laparoscopic|切除/i,
+    procedureText: "s/p surgical resection",
+  },
+  {
+    key: "anal_fistula",
+    label: "Anal fistula",
+    test: /anal fistula|肛門廔管|肛門瘻管/i,
+    procedure: /fistulectomy|廔管切除|瘻管切除/i,
+    procedureText: "s/p Fistulectomy",
+  },
+  {
+    key: "hemorrhoid",
+    label: "Hemorrhoid",
+    test: /hemorrhoid|痔瘡/i,
+    procedure: /hemorrhoidectomy|痔瘡切除/i,
+    procedureText: "s/p hemorrhoidectomy",
+  },
+];
 
-export function buildDiagnosisContext(patient) {
-  const assessment = patient.clinicalContext?.adultAdmissionAssessment || null;
-  const evidence = collectEvidence(patient, assessment);
-  const diagnosis = buildDiagnosis(patient, assessment);
-  const pastHistory = buildPastHistory(assessment, diagnosis);
+const HISTORY_RULES = [
+  {
+    key: "allergic_rhinitis",
+    label: "Allergic Rhinitis with chronic hypertrophic rhinitis",
+    test: /allergic rhinitis|hypertrophic rhinitis|chronic rhinitis|turbinectomy|鼻炎|鼻甲/i,
+    procedure: /CO2 laser turbinectomy|laser turbinectomy|turbinectomy/i,
+    procedureText: "s/p CO2 laser turbinectomy",
+  },
+  {
+    key: "spinal_stenosis",
+    label: "Low back pain with spinal stenosis/radiculopathy",
+    test: /spinal stenosis|radiculopathy|low back pain|foraminal|epidural adhesion/i,
+  },
+];
+
+const NOISE_PATTERN = /nasogastric|NG tube|endo.?tracheal|intubat|central venous|CVC|foley|catheter|tube insertion|port.?a|chest pa|EKG|ECG|echo|ultrasound|sonography|CT|MRI|clipping|成人入院評估|內科病史|外科病史|其他病史|家族病史|過敏史/i;
+
+export function buildDiagnosisContext(patient = {}) {
+  const previous = patient.clinicalContext || {};
+  const assessment = previous.adultAdmissionAssessment || {};
+  const admissionReason = cleanText(assessment.admissionReason || previous.admissionReason?.text || "");
+  const assessmentHistory = cleanText(assessment.pastHistory || "");
+  const evidence = [];
+  const diagnosisMap = new Map();
+  const historyMap = new Map();
+
+  addEvidenceFromText({
+    text: admissionReason,
+    source: "NIS 成人入院評估單：入院原因",
+    date: assessment.updatedAt || assessment.capturedAt || "",
+    diagnosisMap,
+    historyMap,
+    evidence,
+    primary: true,
+  });
+
+  addHistoryFromText({
+    text: assessmentHistory,
+    source: "NIS 成人入院評估單：過去病史",
+    date: assessment.updatedAt || assessment.capturedAt || "",
+    historyMap,
+    evidence,
+  });
+
+  addSupplementalRows({
+    rows: patient.surgeries || [],
+    source: "手術紀錄",
+    textOf: (row) => [row.procedure, row.operation, row.diagPre, row.diagPost, row.indication, row.finding, row.note].filter(Boolean).join(" "),
+    dateOf: (row) => row.date || row.start || "",
+    diagnosisMap,
+    historyMap,
+    evidence,
+  });
+
+  addSupplementalRows({
+    rows: patient.pathology || [],
+    source: "病理報告",
+    textOf: (row) => [row.type, row.specimen, row.diagnosis, row.report].filter(Boolean).join(" "),
+    dateOf: (row) => row.date || "",
+    diagnosisMap,
+    historyMap,
+    evidence,
+  });
+
+  addSupplementalRows({
+    rows: patient.imaging || [],
+    source: "影像/檢查報告",
+    textOf: (row) => [row.type, row.impression, row.report].filter(Boolean).join(" "),
+    dateOf: (row) => row.date || "",
+    diagnosisMap,
+    historyMap,
+    evidence,
+  });
+
+  finalizeDiagnosisMaps({ diagnosisMap, historyMap, patient });
+
+  const currentDiagnoses = [...diagnosisMap.values()];
+  const diagnosisKeys = new Set(currentDiagnoses.map((item) => item.key));
+  const pastHistory = [...historyMap.values()].filter((item) => !diagnosisKeys.has(item.key));
+  const aiIntegrated = {
+    mode: "adult_assessment_admission_reason_primary",
+    explicitDiagnoses: currentDiagnoses,
+    importantHistory: pastHistory,
+    evidence,
+  };
 
   return {
-    currentDiagnoses: diagnosis.map(toSourceItem),
-    pastHistory: pastHistory.map(toSourceItem),
-    admissionReason: patient.clinicalContext?.admissionReason || null,
-    adultAdmissionAssessment: assessment,
-    aiIntegrated: {
-      mode: "adult_assessment_primary",
-      generatedAt: new Date().toISOString(),
-      explicitDiagnoses: diagnosis,
-      importantHistory: pastHistory,
-      inferredItems: [],
-      evidence,
-    },
-    sourceExtracts: patient.clinicalContext?.sourceExtracts || [],
+    ...previous,
+    currentDiagnoses,
+    pastHistory,
+    admissionReason: admissionReason ? { source: "NIS 成人入院評估單：入院原因", text: admissionReason } : previous.admissionReason || null,
+    adultAdmissionAssessment: assessment || previous.adultAdmissionAssessment || null,
+    sourceExtracts: previous.sourceExtracts || [],
+    aiIntegrated,
   };
 }
 
-function collectEvidence(patient, assessment) {
-  const out = [];
-  if (assessment?.admissionReason) {
-    out.push(evidenceItem("diagnosis", "成人入院評估", "adult_assessment", assessment.capturedAt || "", assessment.admissionReason, "high"));
+function finalizeDiagnosisMaps({ diagnosisMap, historyMap, patient }) {
+  const surgeryCorpus = cleanText((patient.surgeries || [])
+    .map((row) => [row.procedure, row.operation, row.diagPre, row.diagPost, row.note].filter(Boolean).join(" "))
+    .join(" "));
+  if (diagnosisMap.has("anal_fistula") && /fistulectomy/i.test(surgeryCorpus)) {
+    const item = diagnosisMap.get("anal_fistula");
+    const procedure = /hemorrhoidectomy/i.test(surgeryCorpus)
+      ? "s/p Fistulectomy and partial hemorrhoidectomy"
+      : "s/p Fistulectomy";
+    diagnosisMap.set("anal_fistula", {
+      ...item,
+      label: item.label.includes("s/p") ? item.label : `${item.label} ${procedure}`,
+      text: item.text?.includes("s/p") ? item.text : `${item.text || item.label} ${procedure}`,
+    });
+    diagnosisMap.delete("hemorrhoid");
+    historyMap.delete("hemorrhoid");
   }
-  if (assessment?.pastHistory) {
-    for (const part of cleanParts(assessment.pastHistory)) {
-      out.push(evidenceItem("history", "成人入院評估", "adult_assessment", assessment.capturedAt || "", part, "high"));
-    }
-  }
-  for (const surgery of patient.surgeries || []) {
-    const text = [surgery.diagPre, surgery.diagPost, surgery.procedure, surgery.operation].filter(Boolean).join("; ");
-    if (text) out.push(evidenceItem("surgery_reference", "手術紀錄", "surgeries", surgery.date || surgery.start || "", text, "medium"));
-  }
-  return out.filter((item) => item.text);
 }
 
-function buildDiagnosis(patient, assessment) {
-  const sourceText = cleanText(assessment?.admissionReason || patient.clinicalContext?.admissionReason?.text || "");
-  const surgeryCorpus = surgeryText(patient.surgeries || []);
-  const surgeryDisease = canonicalDiagnosis(surgeryCorpus);
-  const disease = surgeryDisease || canonicalDiagnosis(sourceText);
-  if (disease) {
-    const surgeryStatus = surgeryStatusForDiagnosis(patient.surgeries || [], disease);
-    return [makeItem({
-      kind: "diagnosis",
-      label: [disease, surgeryStatus].filter(Boolean).join(" "),
-      text: sourceText,
-      source: "成人入院評估",
-      sourceKey: "adult_assessment",
-      date: assessment?.capturedAt || "",
-      confidence: "high",
-    })];
+function addEvidenceFromText({ text, source, date, diagnosisMap, historyMap, evidence, primary = false }) {
+  if (!text) return;
+  const chunks = splitClinicalText(text);
+  for (const chunk of chunks) {
+    addDiagnosisCandidates({ text: chunk, source, date, diagnosisMap, evidence, primary });
+    addHistoryCandidates({ text: chunk, source, date, historyMap, evidence, primary });
   }
-
-  const fallback = cleanParts(sourceText)
-    .map((part) => canonicalDiagnosis(part) || part)
-    .filter((part) => part && !isNoise(part));
-  return uniqueLabels(fallback).slice(0, 3).map((label) => makeItem({
-    kind: "diagnosis",
-    label,
-    text: sourceText || label,
-    source: "成人入院評估",
-    sourceKey: "adult_assessment",
-    date: assessment?.capturedAt || "",
-    confidence: sourceText ? "high" : "low",
-  }));
 }
 
-function buildPastHistory(assessment, diagnosis) {
-  const diagnosisTopic = diagnosisTopicKey(diagnosis[0]?.label || "");
-  const labels = [];
-  for (const part of cleanParts(assessment?.pastHistory || "")) {
-    const label = canonicalHistory(part);
-    if (!label || sameTopic(label, diagnosisTopic)) continue;
-    labels.push(label);
+function addHistoryFromText({ text, source, date, historyMap, evidence }) {
+  if (!text || isNegativeHistoryText(text)) return;
+  for (const chunk of splitClinicalText(text)) {
+    addHistoryCandidates({ text: chunk, source, date, historyMap, evidence, primary: true });
   }
-
-  return uniqueLabels(labels).slice(0, 8).map((label) => makeItem({
-    kind: "history",
-    label,
-    text: label,
-    source: "成人入院評估",
-    sourceKey: "adult_assessment",
-    date: assessment?.capturedAt || "",
-    confidence: "high",
-  }));
 }
 
-function canonicalDiagnosis(text) {
+function addSupplementalRows({ rows, source, textOf, dateOf, diagnosisMap, historyMap, evidence }) {
+  for (const row of rows.slice(0, 30)) {
+    const text = cleanText(textOf(row));
+    if (!text) continue;
+    const date = dateOf(row);
+    addDiagnosisCandidates({ text, source, date, diagnosisMap, evidence, primary: false });
+    addHistoryCandidates({ text, source, date, historyMap, evidence, primary: false });
+  }
+}
+
+function addDiagnosisCandidates({ text, source, date, diagnosisMap, evidence, primary }) {
+  for (const rule of DIAGNOSIS_RULES) {
+    if (!rule.test.test(text)) continue;
+    if (!primary && isPureProcedureNoise(text) && !/adenocarcinoma|carcinoma|malignan|cancer|癌/i.test(text)) continue;
+    const procedure = procedurePhrase(rule, text);
+    const label = procedure ? `${rule.label} ${procedure}` : rule.label;
+    upsertClinicalItem(diagnosisMap, rule.key, {
+      key: rule.key,
+      label,
+      text: label,
+      source,
+      date,
+      status: primary ? "明確" : "補充",
+      confidence: primary ? "high" : "medium",
+    });
+    addEvidence(evidence, { kind: "診斷", text: clip(text), source, date, confidence: primary ? "high" : "medium", key: rule.key });
+  }
+}
+
+function addHistoryCandidates({ text, source, date, historyMap, evidence, primary }) {
+  if (isNegativeHistoryText(text)) return;
+  for (const rule of HISTORY_RULES) {
+    if (!rule.test.test(text)) continue;
+    const procedure = procedurePhrase(rule, text);
+    const label = procedure ? `${rule.label} ${procedure}` : rule.label;
+    upsertClinicalItem(historyMap, rule.key, {
+      key: rule.key,
+      label,
+      text: label,
+      source,
+      date,
+      status: primary ? "明確" : "補充",
+      confidence: primary ? "high" : "medium",
+    });
+    addEvidence(evidence, { kind: "過去病史", text: clip(text), source, date, confidence: primary ? "high" : "medium", key: rule.key });
+  }
+}
+
+function procedurePhrase(rule, text) {
+  if (!rule.procedure || !rule.procedure.test(text)) return "";
+  if (/fistulectomy/i.test(text) && /hemorrhoidectomy/i.test(text)) return "s/p Fistulectomy and partial hemorrhoidectomy";
+  if (/CO2 laser turbinectomy/i.test(text)) return "s/p CO2 laser turbinectomy";
+  if (/low anterior resection|LAR/i.test(text)) return "s/p LAR";
+  return rule.procedureText || "";
+}
+
+function upsertClinicalItem(map, key, item) {
+  const existing = map.get(key);
+  if (!existing) {
+    map.set(key, item);
+    return;
+  }
+  if (!existing.label.includes("s/p") && item.label.includes("s/p")) {
+    map.set(key, {
+      ...existing,
+      label: mergeProcedureLabel(existing.label, item.label),
+      text: mergeProcedureLabel(existing.text || existing.label, item.label),
+    });
+    return;
+  }
+  const existingScore = confidenceScore(existing);
+  const nextScore = confidenceScore(item);
+  if (nextScore > existingScore || (nextScore === existingScore && item.label.length > existing.label.length)) {
+    map.set(key, { ...existing, ...item });
+  }
+}
+
+function mergeProcedureLabel(baseLabel, procedureLabel) {
+  const procedure = String(procedureLabel || "").match(/\bs\/p\b.+$/i)?.[0] || "";
+  if (!procedure) return baseLabel;
+  return `${baseLabel} ${procedure}`.replace(/\s+/g, " ").trim();
+}
+
+function confidenceScore(item) {
+  return (item.status === "明確" ? 4 : 2) + (item.label?.includes("s/p") ? 1 : 0);
+}
+
+function addEvidence(evidence, item) {
+  const key = [item.kind, item.key, item.source, item.date].join("|");
+  if (evidence.some((row) => [row.kind, row.key, row.source, row.date].join("|") === key)) return;
+  evidence.push(item);
+}
+
+function splitClinicalText(text) {
+  return cleanText(text)
+    .split(/\n|；|;|。|、|\u2022|(?=\d+\.)/)
+    .map((item) => item.replace(/^[\s:：,，.-]+/, "").trim())
+    .filter(Boolean);
+}
+
+function isPureProcedureNoise(text) {
   const value = cleanText(text);
-  if (/(大腸癌|結腸癌|直腸癌|colon cancer|rectal cancer|colorectal cancer|adenocarcinoma)/i.test(value)) {
-    return "Rectal/colorectal cancer";
-  }
-  if (/(肛門廔管|anal fistula)/i.test(value)) return "Anal fistula";
-  if (/(痔瘡|hemorrhoid)/i.test(value)) return "Hemorrhoid";
-  return "";
+  return NOISE_PATTERN.test(value) && !DIAGNOSIS_RULES.some((rule) => rule.test.test(value));
 }
 
-function canonicalHistory(text) {
+function isNegativeHistoryText(text) {
   const value = cleanText(text);
-  if (!value || isNoise(value)) return "";
-  if (/(過敏性鼻炎|allergic rhinitis|hypertrophic rhinitis|turbinectomy)/i.test(value)) {
-    return "Allergic Rhinitis with chronic hypertrophic rhinitis";
-  }
-  return canonicalDiagnosis(value) || value;
+  return /無\s*不詳\s*有|無\s*有|無\s*$|nil|denied|no remarkable|none/i.test(value) && value.length < 60;
 }
 
-function surgeryStatusForDiagnosis(surgeries, disease) {
-  if (!/cancer|fistula|hemorrhoid/i.test(disease)) return "";
-  const corpus = surgeryText(surgeries);
-  if (/robotic\s+LAR|low anterior resection|\bLAR\b/i.test(corpus)) return "s/p LAR";
-  if (/colectomy|hemicolectomy|resection|切除/i.test(corpus)) return "s/p surgical resection";
-  if (/fistulectomy/i.test(corpus) && /hemorrhoidectomy/i.test(corpus)) return "s/p Fistulectomy and partial hemorrhoidectomy";
-  if (/fistulectomy/i.test(corpus)) return "s/p Fistulectomy";
-  return "";
+function cleanText(value) {
+  return String(value || "").replace(/\s+/g, " ").trim();
 }
 
-function cleanParts(text) {
-  return String(text || "")
-    .split(/\n|;|；|，|。/)
-    .map((part) => cleanText(part))
-    .filter((part) => part && !isNoise(part));
-}
-
-function isNoise(text) {
-  const value = cleanText(text).replace(/[，,。；;：:\s]/g, "");
-  return !value || NEGATIVE_OR_EMPTY.test(value) || NOISE_WORDS.test(cleanText(text)) || FIELD_NOISE.test(value) || PROCEDURE_NOISE.test(value);
-}
-
-function surgeryText(surgeries) {
-  return surgeries.map((row) => [row.diagPre, row.diagPost, row.procedure, row.operation].filter(Boolean).join(" ")).join("\n");
-}
-
-function sameTopic(label, topic) {
-  if (!topic) return false;
-  const key = diagnosisTopicKey(label);
-  return key && key === topic;
-}
-
-function diagnosisTopicKey(value) {
-  const text = String(value || "").toLowerCase();
-  if (/大腸癌|結腸癌|直腸癌|colon|rectal|colorectal|adenocarcinoma/.test(text)) return "colorectal_cancer";
-  if (/anal fistula|肛門廔管/.test(text)) return "anal_fistula";
-  if (/hemorrhoid|痔瘡/.test(text)) return "hemorrhoid";
-  if (/rhinitis|鼻炎/.test(text)) return "rhinitis";
-  return normalizeKey(text);
-}
-
-function uniqueLabels(labels) {
-  const seen = new Set();
-  const out = [];
-  for (const label of labels) {
-    const key = diagnosisTopicKey(label);
-    if (!key || seen.has(key)) continue;
-    seen.add(key);
-    out.push(label);
-  }
-  return out;
-}
-
-function evidenceItem(kind, source, sourceKey, date, text, confidence) {
-  return makeItem({ kind, label: cleanText(text).slice(0, 160), text, source, sourceKey, date, confidence });
-}
-
-function makeItem({ kind, label, text, source, sourceKey, date, confidence }) {
-  return {
-    kind,
-    label: cleanText(label),
-    text: cleanText(text || label),
-    source,
-    sourceKey,
-    date,
-    confidence,
-    status: "明確",
-  };
-}
-
-function toSourceItem(item) {
-  return {
-    source: `${item.source}${item.date ? ` ${item.date}` : ""}`,
-    text: item.text,
-    confidence: item.confidence,
-    status: item.status,
-  };
-}
-
-function cleanText(text) {
-  return String(text || "")
-    .replace(/\s+/g, " ")
-    .replace(/\bASORDER\b/gi, "")
-    .replace(/^[:：]+|[:：]+$/g, "")
-    .trim()
-    .slice(0, 900);
-}
-
-function normalizeKey(value) {
-  return String(value || "").toLowerCase().replace(/[^a-z0-9\u4e00-\u9fff]+/g, " ").trim();
+function clip(text) {
+  const value = cleanText(text);
+  return value.length > 220 ? `${value.slice(0, 220)}...` : value;
 }

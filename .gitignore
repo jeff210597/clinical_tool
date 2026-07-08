@@ -12,5 +12,8 @@ npm-debug.log*
 
 *.log
 *.tmp
+*PAT*token*
+*.pat
+*.token
 Thumbs.db
 desktop.ini

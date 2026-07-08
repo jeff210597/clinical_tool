@@ -34,6 +34,7 @@ const SOURCE_LABELS = {
   labs: "Labs",
   imaging: "影像報告",
   surgeries: "手術紀錄",
+  pathology: "病理報告",
   nursing: "護理紀錄",
   glucose: "血糖/胰島素",
   intakeOutput: "輸入輸出",
@@ -114,6 +115,7 @@ function makePendingPatient(query = "") {
     labMatrix: { columns: [], rows: [] },
     imaging: [],
     surgeries: [],
+    pathology: [],
     nursing: [],
     orders: [],
     tpr: [],
@@ -192,7 +194,7 @@ async function buildPatientFromQuery(query, user = null) {
 
   const sourceResult = await refreshSources(
     { patientRef: identifiedPatient.chartNo, feeno: admission.feeNo, onepageAuthToken: onepageToken },
-    ["orders", "adult_assessment", "vitals", "labs", "imaging", "surgeries", "nursing", "glucose", "intakeOutput"]
+    ["orders", "adult_assessment", "vitals", "labs", "imaging", "surgeries", "pathology", "nursing", "glucose", "intakeOutput"]
   );
   const merged = mergeSourceResultIntoPatient(identifiedPatient, sourceResult);
   return {
@@ -258,6 +260,10 @@ function mergeSourceResultIntoPatient(patient, result) {
 
   if (Array.isArray(result.surgeries)) {
     merged.surgeries = result.surgeries;
+  }
+
+  if (Array.isArray(result.pathology)) {
+    merged.pathology = result.pathology;
   }
 
   if (Array.isArray(result.nursing)) {
@@ -644,7 +650,7 @@ async function refreshSources(body, sources) {
     })());
   }
 
-  for (const source of ["labs", "imaging", "surgeries"]) {
+  for (const source of ["labs", "imaging", "surgeries", "pathology"]) {
     if (!sources.includes(source) || !body.feeno) continue;
     tasks.push((async () => {
       try {
@@ -732,6 +738,7 @@ async function refreshSources(body, sources) {
     labMatrix: buildLabMatrix(clinicalResults.labs?.rows || []),
     imaging: clinicalResults.imaging?.rows || null,
     surgeries: clinicalResults.surgeries?.rows || null,
+    pathology: clinicalResults.pathology?.rows || null,
     nursing: clinicalResults.nursing?.rows || null,
     glucose: glucoseResult?.rows || null,
     intakeOutput: intakeOutputResult ? {
@@ -928,7 +935,7 @@ async function routeApi(req, res, url) {
     const user = await requireUser(req, res);
     if (!user) return;
     const body = await readBody(req);
-    const sources = body.sources || ["orders", "admission", "progress", "discharge", "adult_assessment"];
+    const sources = body.sources || ["orders", "adult_assessment", "imaging", "surgeries", "pathology"];
     json(res, 200, await refreshSources({ ...body, onepageAuthToken: user.onepageAuthToken || "" }, sources));
     return;
   }

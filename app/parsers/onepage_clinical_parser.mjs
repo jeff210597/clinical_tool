@@ -14,6 +14,10 @@ const SOURCE_CONFIG = {
     endpoints: ["surgery.list", "surgeries.list", "operation.list", "operations.list"],
     normalize: normalizeSurgeries,
   },
+  pathology: {
+    endpoints: ["patho.list", "pathology.list", "pathology.report.list"],
+    normalize: normalizePathology,
+  },
   nursing: {
     endpoints: ["nursing.list", "nursing_note.list", "nursing.notes", "notes.nursing.list"],
     normalize: normalizeNursing,
@@ -35,6 +39,9 @@ export async function fetchOnepageClinicalSource({
   if (!authToken) throw new Error("Onepage auth token is required");
   if (source === "imaging") {
     return fetchCombinedImaging({ feeno, chartNo, onepageBase, appToken, authToken, fetchImpl });
+  }
+  if (source === "pathology") {
+    return fetchPathology({ feeno, chartNo, onepageBase, appToken, authToken, fetchImpl });
   }
 
   const errors = [];
@@ -67,6 +74,35 @@ export async function fetchOnepageClinicalSource({
 
   if (emptyResult) return emptyResult;
   throw new Error(errors.slice(0, 3).join(" | ") || "no Onepage endpoint returned data");
+}
+
+async function fetchPathology({ feeno, chartNo, onepageBase, appToken, authToken, fetchImpl }) {
+  const errors = [];
+  let emptyResult = null;
+  for (const endpoint of SOURCE_CONFIG.pathology.endpoints) {
+    try {
+      const payload = await postOnepageApi({
+        onepageBase,
+        path: endpoint,
+        params: { ...requestParams(feeno, chartNo), content: true, current: false },
+        appToken,
+        authToken,
+        fetchImpl,
+      });
+      const rows = toRows(payload);
+      const normalized = normalizePathology(rows);
+      if (!normalized.length && !rows.length && !emptyResult) {
+        emptyResult = { source: "pathology", endpoint, rows: [], raw: [] };
+      }
+      if (normalized.length) {
+        return { source: "pathology", endpoint, rows: normalized, raw: rows };
+      }
+    } catch (error) {
+      errors.push(`${endpoint}: ${error.message}`);
+    }
+  }
+  if (emptyResult) return emptyResult;
+  throw new Error(errors.slice(0, 3).join(" | ") || "no Onepage pathology endpoint returned data");
 }
 
 async function fetchCombinedImaging({ feeno, chartNo, onepageBase, appToken, authToken, fetchImpl }) {
@@ -271,6 +307,41 @@ function normalizeSurgeries(rows) {
     codes: Array.isArray(row.code) ? row.code.join(", ") : firstValue(row.code),
     note: firstValue(row.note, row.summary, row.record, row.report, row.finding),
   })).filter((row) => row.date || row.procedure || row.note), (row) => row.date);
+}
+
+function normalizePathology(rows) {
+  return sortByTimeDesc(rows.map((row) => {
+    const clinicalInfo = cleanReport(firstValue(row.clinical_info_text, row.clinicalInfo, row.clinical_info?.text, row.clinical_info?.diagnosis));
+    const diagnosis = cleanReport(firstValue(
+      row.diagnosis,
+      row.diag,
+      row.final_diagnosis,
+      row.pathologic_diagnosis,
+      row.pathology_diagnosis,
+      row.result,
+      row.診斷
+    ));
+    const report = cleanReport(firstValue(
+      row.content,
+      row.report,
+      row.html_report,
+      row.note,
+      row.description,
+      row.finding,
+      row.findings,
+      clinicalInfo,
+      row.報告
+    ));
+    return {
+      date: formatDate(firstValue(row.date, row.report_date, row.patho_date, row.order_date, row.result_date, row.日期)),
+      type: firstValue(row.type, row.title, row.name, row.exam_name, row.order_name, row.specimen, row.tissue, row.檢查名稱) || "病理報告",
+      source: "Patho",
+      diagnosis,
+      report,
+      specimen: firstValue(row.specimen, row.tissue, row.part, row.organ, row.檢體),
+      clinicalInfo,
+    };
+  }).filter((row) => row.date || row.type || row.diagnosis || row.report), (row) => row.date);
 }
 
 function formatPeople(value) {

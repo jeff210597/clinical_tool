@@ -4,6 +4,7 @@
   user: null,
   physicianRoster: [],
   physicianRosterDoctor: null,
+  openPatients: [],
 };
 
 const el = {
@@ -25,6 +26,7 @@ const el = {
   logoutButton: document.querySelector("#logoutButton"),
   patientTitle: document.querySelector("#patientTitle"),
   patientMeta: document.querySelector("#patientMeta"),
+  patientWindowTabs: document.querySelector("#patientWindowTabs"),
   refreshPatient: document.querySelector("#refreshPatient"),
   copySummary: document.querySelector("#copySummary"),
   warningStrip: document.querySelector("#warningStrip"),
@@ -133,8 +135,56 @@ function renderPhysicianRoster(items = [], doctor = state.physicianRosterDoctor,
   }
 }
 
-function renderPatient(patient) {
+function patientKey(patient = {}) {
+  return String(patient.chartNo || patient.patientRef || patient.feeno || patient.bedNo || "").trim();
+}
+
+function patientWindowLabel(patient = {}) {
+  return [patient.displayName || patient.chartNo || patient.patientRef || "未命名", patient.bedNo || ""].filter(Boolean).join(" · ");
+}
+
+function upsertOpenPatient(patient) {
+  const key = patientKey(patient);
+  if (!key) return;
+  const previous = state.openPatients.filter((item) => patientKey(item) !== key);
+  state.openPatients = [patient, ...previous].slice(0, 16);
+}
+
+function renderPatientWindows() {
+  if (!el.patientWindowTabs) return;
+  if (!state.openPatients.length) {
+    el.patientWindowTabs.innerHTML = "";
+    el.patientWindowTabs.classList.add("is-hidden");
+    return;
+  }
+  const currentKey = patientKey(state.currentPatient);
+  el.patientWindowTabs.classList.remove("is-hidden");
+  el.patientWindowTabs.innerHTML = state.openPatients.map((patient) => {
+    const key = patientKey(patient);
+    return `
+      <div class="patient-window-tab ${key === currentKey ? "is-active" : ""}" data-patient-key="${escapeHtml(key)}">
+        <button class="patient-window-switch" type="button" data-patient-key="${escapeHtml(key)}">${escapeHtml(patientWindowLabel(patient))}</button>
+        <button class="patient-window-close" type="button" data-close-patient="${escapeHtml(key)}" title="關閉此病人">×</button>
+      </div>
+    `;
+  }).join("");
+}
+
+function clearPatientView(message = "請先以 Onepage 帳號登入。") {
+  state.currentPatient = null;
+  el.patientTitle.textContent = "尚未選擇";
+  el.patientMeta.textContent = message;
+  el.refreshPatient.disabled = true;
+  el.copySummary.disabled = true;
+  el.warningStrip.classList.add("is-hidden");
+  for (const panel of el.panels) panel.innerHTML = `<div class="empty-state">${escapeHtml(message)}</div>`;
+  renderPatientWindows();
+}
+
+function renderPatient(patient, options = {}) {
+  if (options.store !== false) upsertOpenPatient(patient);
   state.currentPatient = patient;
+  renderPatientWindows();
   const bedLabel = patient.bedNo || "床號待讀取";
   el.patientTitle.innerHTML = `
     <span>${escapeHtml(patient.chartNo || patient.patientRef || "未指定")}</span>
@@ -165,6 +215,7 @@ function renderPatient(patient) {
   document.querySelector("#labsPanel").innerHTML = renderLabs(patient);
   document.querySelector("#imagingPanel").innerHTML = renderImaging(patient.imaging || []);
   document.querySelector("#surgeryPanel").innerHTML = renderSurgeries(patient.surgeries || []);
+  document.querySelector("#pathologyPanel").innerHTML = renderPathology(patient.pathology || []);
   document.querySelector("#nursingPanel").innerHTML = renderNursing(patient.nursing || []);
   document.querySelector("#ordersPanel").innerHTML = renderOrders(patient.orders || []);
   document.querySelector("#tprPanel").innerHTML = renderTpr(patient.tpr || patient.vitals || patient.itpr || [], patient.intakeOutput);
@@ -223,6 +274,7 @@ function buildCoverage(patient) {
     { label: "Labs", value: has(patient.labs) ? `${patient.labs.length} 筆` : "尚未擷取", detail: has(patient.labs) ? latestLine(patient.labs, (row) => `${row.item || "Lab"} ${row.latest || ""}`) : "尚未讀取檢驗結果", status: has(patient.labs) ? "ok" : "missing" },
     { label: "影像", value: has(patient.imaging) ? `${patient.imaging.length} 筆` : "尚未擷取", detail: has(patient.imaging) ? latestLine(patient.imaging, (row) => `${row.date || ""} ${row.type || "影像"}`) : "尚未讀取報告結果", status: has(patient.imaging) ? "ok" : "missing" },
     { label: "手術", value: has(patient.surgeries) ? `${patient.surgeries.length} 筆` : "尚未擷取", detail: has(patient.surgeries) ? latestLine(patient.surgeries, (row) => row.procedure || row.note || "手術紀錄") : "尚未讀取手術紀錄", status: has(patient.surgeries) ? "ok" : "missing" },
+    { label: "病理", value: has(patient.pathology) ? `${patient.pathology.length} 筆` : "尚未擷取", detail: has(patient.pathology) ? latestLine(patient.pathology, (row) => `${row.date || ""} ${row.type || "病理"}`) : "尚未讀取病理報告", status: has(patient.pathology) ? "ok" : "missing" },
     { label: "護理", value: has(patient.nursing) ? `${patient.nursing.length} 筆` : "尚未擷取", detail: has(patient.nursing) ? latestLine(patient.nursing, (row) => row.note || row.type || "護理紀錄") : "尚未讀取護理紀錄", status: has(patient.nursing) ? "ok" : "missing" },
   ];
 }
@@ -319,6 +371,7 @@ function summaryClinicalTables(patient) {
     <div class="summary-report-grid">
       ${summaryExpandableList("影像 / 檢查", patient.imaging || [], imagingSummaryTitle, imagingSummaryBody)}
       ${summaryExpandableList("手術", patient.surgeries || [], surgerySummaryTitle, surgerySummaryBody)}
+      ${summaryExpandableList("病理", patient.pathology || [], pathologySummaryTitle, pathologySummaryBody)}
     </div>
   `;
 }
@@ -423,6 +476,14 @@ function surgerySummaryBody(row) {
   return [row.diagPre ? `術前診斷：${row.diagPre}` : "", row.diagPost ? `術後診斷：${row.diagPost}` : "", row.finding || row.note || ""].filter(Boolean).join("\n") || "有手術標題，尚無詳細報告";
 }
 
+function pathologySummaryTitle(row) {
+  return [row.source || "Patho", row.date, row.type || row.specimen || "病理報告"].filter(Boolean).join(" · ");
+}
+
+function pathologySummaryBody(row) {
+  return [row.diagnosis ? `Diagnosis：${row.diagnosis}` : "", row.report || ""].filter(Boolean).join("\n") || "有病理標題，尚無詳細報告";
+}
+
 function diagnosisLine(patient) {
   const first = patient.clinicalContext?.aiIntegrated?.explicitDiagnoses?.[0];
   return first?.label || first?.text || patient.clinicalContext?.admissionReason?.text || "尚未擷取";
@@ -449,6 +510,7 @@ function roundingChecklist(patient, coverage) {
     missing.some((item) => item.label === "Labs") ? "Labs 尚未接入；請以原始系統結果為準" : "已檢查 Labs 區塊",
     missing.some((item) => item.label === "影像") ? "影像尚未接入；請以正式報告為準" : "已檢查影像報告",
     missing.some((item) => item.label === "手術") ? "手術紀錄尚未接入；請回原系統核對" : "已檢查手術紀錄",
+    missing.some((item) => item.label === "病理") ? "病理報告尚未接入；請回 Onepage Patho 核對" : "已檢查病理報告",
     missing.some((item) => item.label === "護理") ? "護理紀錄尚未接入；請回原系統核對" : "已檢查護理紀錄",
   ];
   return `<ul class="rounding-checklist">${items.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`;
@@ -619,6 +681,25 @@ function renderImaging(imaging) {
   `;
 }
 
+function renderPathology(pathology) {
+  if (!pathology.length) return missingDataState();
+  return `
+    <div class="surgery-layout pathology-layout">
+      <div class="surgery-list" aria-label="病理清單">
+        ${pathology.map((row, index) => `
+          <a class="surgery-list-item" href="#pathology-${index}">
+            <span>${escapeHtml([row.source || "Patho", row.date || ""].filter(Boolean).join(" · "))}</span>
+            <strong>${escapeHtml(row.type || row.specimen || "病理報告")}</strong>
+          </a>
+        `).join("")}
+      </div>
+      <div class="surgery-records">
+        ${pathology.map((row, index) => pathologyRecord(row, index)).join("")}
+      </div>
+    </div>
+  `;
+}
+
 function imagingRecord(row, index) {
   const report = row.report || row.impression || "";
   return `
@@ -631,6 +712,23 @@ function imagingRecord(row, index) {
       </div>
       ${row.impression ? `<section class="record-block"><h4>Impression</h4><pre>${escapeHtml(row.impression)}</pre></section>` : ""}
       ${report && report !== row.impression ? `<section class="record-block"><h4>Report</h4><pre>${escapeHtml(report)}</pre></section>` : ""}
+    </article>
+  `;
+}
+
+function pathologyRecord(row, index) {
+  return `
+    <article id="pathology-${index}" class="surgery-record pathology-record">
+      <div class="record-heading">
+        <div>
+          <p class="eyebrow">${escapeHtml(row.date || "")}</p>
+          <h3>${escapeHtml([row.source || "Patho", row.type || row.specimen || "病理報告"].filter(Boolean).join(" · "))}</h3>
+        </div>
+        <span>${escapeHtml(row.specimen || "")}</span>
+      </div>
+      ${row.diagnosis ? `<section class="record-block"><h4>Diagnosis</h4><pre>${escapeHtml(row.diagnosis)}</pre></section>` : ""}
+      ${row.report ? `<section class="record-block"><h4>Report</h4><pre>${escapeHtml(row.report)}</pre></section>` : ""}
+      ${row.clinicalInfo && row.clinicalInfo !== row.report ? `<section class="record-block"><h4>Clinical Info</h4><pre>${escapeHtml(row.clinicalInfo)}</pre></section>` : ""}
     </article>
   `;
 }
@@ -1030,7 +1128,13 @@ async function loadPhysicianRoster(query) {
     el.loginMessage.textContent = "請先登入工作台，再查詢醫師住院清單。";
     return;
   }
-  const doctorId = String(query || "").trim();
+  const rawQuery = String(query || "").trim();
+  const doctorId = rawQuery.match(/\d{3,}/)?.[0] || rawQuery;
+  const typedName = rawQuery
+    .replace(doctorId, "")
+    .replace(/[()[\]#／/\\:：,，;；|醫師住院員工編號GSMgsm]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
   if (!doctorId) return;
   el.physicianRosterStatus.textContent = "正在讀取醫師住院清單...";
   el.physicianRosterForm.querySelector("button").disabled = true;
@@ -1039,9 +1143,11 @@ async function loadPhysicianRoster(query) {
       method: "POST",
       body: JSON.stringify({ doctorId }),
     });
-    renderPhysicianRoster(data.patients || [], data.physician || { id: doctorId });
+    const physician = { ...(data.physician || { id: doctorId }), id: data.physician?.id || doctorId };
+    if (!physician.name && typedName) physician.name = typedName;
+    renderPhysicianRoster(data.patients || [], physician);
   } catch (error) {
-    renderPhysicianRoster([], { id: doctorId }, `${error.message || "查詢失敗"}；若輸入姓名/GSM 無法解析，請改輸入醫師員工編號。`);
+    renderPhysicianRoster([], { id: doctorId, name: typedName }, `${error.message || "查詢失敗"}；若輸入姓名/GSM 無法解析，請改輸入醫師員工編號。`);
   } finally {
     el.physicianRosterForm.querySelector("button").disabled = !state.user;
   }
@@ -1054,6 +1160,33 @@ function switchTab(name) {
 }
 
 document.addEventListener("click", async (event) => {
+  const switchKey = event.target?.dataset?.patientKey;
+  if (switchKey && event.target.classList.contains("patient-window-switch")) {
+    const patient = state.openPatients.find((item) => patientKey(item) === switchKey);
+    if (patient) {
+      renderPatient(patient, { store: false });
+      switchTab(state.currentTab);
+    }
+    return;
+  }
+
+  const closeKey = event.target?.dataset?.closePatient;
+  if (closeKey) {
+    const closingCurrent = patientKey(state.currentPatient) === closeKey;
+    state.openPatients = state.openPatients.filter((item) => patientKey(item) !== closeKey);
+    if (closingCurrent) {
+      const next = state.openPatients[0];
+      if (next) {
+        renderPatient(next, { store: false });
+        switchTab(state.currentTab);
+      } else {
+        clearPatientView("尚未選擇病人。");
+      }
+    } else {
+      renderPatientWindows();
+    }
+    return;
+  }
 
   if (event.target?.id === "refreshContext") {
     if (!state.currentPatient) return;
@@ -1116,10 +1249,8 @@ el.loginForm.addEventListener("submit", async (event) => {
 el.logoutButton.addEventListener("click", async () => {
   await api("/api/auth/logout", { method: "POST", body: "{}" }).catch(() => null);
   state.user = null;
-  state.currentPatient = null;
-  el.patientTitle.textContent = "尚未選擇";
-  el.patientMeta.textContent = "請先以 Onepage 帳號登入。";
-  document.querySelector("#summaryPanel").innerHTML = `<div class="empty-state">請先以 Onepage 帳號登入。</div>`;
+  state.openPatients = [];
+  clearPatientView("請先以 Onepage 帳號登入。");
   renderAuth();
   renderRecent([]);
   renderPhysicianRoster([]);
