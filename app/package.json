@@ -1,0 +1,10 @@
+{
+  "name": "onepage-med-relay",
+  "private": true,
+  "version": "1.2.0-direct-onepage-login",
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs",
+    "check": "node --check server.mjs && node --check public/app.js && node --check parsers/onepage_browser_auth.mjs && node --check parsers/onepage_current_admission.mjs && node smoke_check.cjs"
+  }
+}

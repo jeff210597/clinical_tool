@@ -1,0 +1,45 @@
+﻿<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Onepage 查房工作台</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar" aria-label="病人清單">
+        <div class="brand"><div><h1>查房工作台</h1><p id="serviceStatus">服務檢查中</p></div></div>
+        <section class="auth-panel">
+          <form id="loginForm" class="login-form">
+            <label for="loginUser">Onepage 帳號</label>
+            <input id="loginUser" name="loginUser" autocomplete="username" placeholder="輸入 Onepage 帳號" />
+            <label for="loginPassword">Onepage 密碼</label>
+            <input id="loginPassword" name="loginPassword" type="password" autocomplete="current-password" placeholder="輸入 Onepage 密碼" />
+            <button type="submit">登入 Onepage</button>
+            <p id="loginMessage" class="eyebrow">密碼僅用於這次登入，不會保存在工作台。</p>
+          </form>
+          <div id="userPanel" class="user-panel is-hidden"><span id="currentUserLabel"></span><button id="logoutButton" type="button">登出</button></div>
+        </section>
+        <form id="searchForm" class="search"><label for="patientQuery">病歷號 / 床號 / 住院序號</label><div class="search-row"><input id="patientQuery" name="patientQuery" autocomplete="off" placeholder="輸入病歷號或床號" /><button type="submit">查詢</button></div></form>
+        <section class="roster-panel">
+          <form id="physicianRosterForm" class="search">
+            <label for="physicianQuery">醫師住院清單</label>
+            <div class="search-row"><input id="physicianQuery" name="physicianQuery" autocomplete="off" placeholder="醫師員工編號，如 09432" /><button type="submit">住院</button></div>
+          </form>
+          <div id="physicianRosterStatus" class="eyebrow">輸入醫師員工編號後可快速列出住院病人。</div>
+          <div id="physicianRosterList" class="patient-list roster-list"></div>
+        </section>
+        <section><div class="section-title"><span>最近擷取</span><button id="reloadRecent" class="icon-button" type="button" title="重新整理最近擷取">↻</button></div><div id="recentList" class="patient-list"></div></section>
+      </aside>
+      <main class="content">
+        <header class="patient-header"><div><p class="eyebrow">目前病人</p><h2 id="patientTitle">尚未選擇</h2><p id="patientMeta">請先以 Onepage 帳號登入後再查詢。</p></div><div class="actions"><button id="refreshPatient" type="button" disabled>重新整理</button><button id="copySummary" type="button" disabled>複製摘要</button></div></header>
+        <div id="warningStrip" class="warning-strip is-hidden"></div>
+        <nav class="tabs" aria-label="資料分頁">
+          <button class="tab is-active" data-tab="summary" type="button">摘要</button><button class="tab" data-tab="context" type="button">診斷病史</button><button class="tab" data-tab="orders" type="button">醫囑</button><button class="tab" data-tab="tpr" type="button">TPR</button><button class="tab" data-tab="labs" type="button">Labs</button><button class="tab" data-tab="imaging" type="button">影像</button><button class="tab" data-tab="surgery" type="button">手術</button><button class="tab" data-tab="io" type="button">輸入輸出</button><button class="tab" data-tab="nursing" type="button">護理</button><button class="tab" data-tab="glucose" type="button">血糖</button><button class="tab" data-tab="ai" type="button">AI 判讀</button>
+        </nav><section id="summaryPanel" class="panel" data-panel="summary"><div class="empty-state">請先以 Onepage 帳號登入，再選擇病人。</div></section>
+        <section id="contextPanel" class="panel is-hidden" data-panel="context"></section><section id="ordersPanel" class="panel is-hidden" data-panel="orders"></section><section id="tprPanel" class="panel is-hidden" data-panel="tpr"></section><section id="labsPanel" class="panel is-hidden" data-panel="labs"></section><section id="imagingPanel" class="panel is-hidden" data-panel="imaging"></section><section id="surgeryPanel" class="panel is-hidden" data-panel="surgery"></section><section id="ioPanel" class="panel is-hidden" data-panel="io"></section><section id="nursingPanel" class="panel is-hidden" data-panel="nursing"></section><section id="glucosePanel" class="panel is-hidden" data-panel="glucose"></section><section id="aiPanel" class="panel is-hidden" data-panel="ai"></section></main>
+    </div>
+    <script src="/app.js"></script>
+  </body>
+</html>
