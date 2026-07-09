@@ -176,11 +176,17 @@ async function fetchCombinedImaging({ feeno, chartNo, onepageBase, appToken, aut
 }
 
 async function postOnepageApi({ onepageBase, path, params, appToken, authToken, fetchImpl }) {
+  const text = await postOnepageText({ onepageBase, path, params, appToken, authToken, fetchImpl });
+  if (!text.trim()) return [];
+  return JSON.parse(text);
+}
+
+async function postOnepageText({ onepageBase, path, params, appToken, authToken, fetchImpl, accept = "application/json, text/plain, */*" }) {
   const base = String(onepageBase || DEFAULT_ONEPAGE_BASE).replace(/\/$/, "");
   const response = await fetchImpl(`${base}/api/${path}`, {
     method: "POST",
     headers: {
-      accept: "application/json, text/plain, */*",
+      accept,
       "content-type": "application/json",
       origin: base,
       referer: `${base}/mypage`,
@@ -195,8 +201,7 @@ async function postOnepageApi({ onepageBase, path, params, appToken, authToken, 
     const body = text ? ` ${text.slice(0, 160)}` : "";
     throw new Error(`HTTP ${response.status}${body}`);
   }
-  if (!text.trim()) return [];
-  return JSON.parse(text);
+  return text;
 }
 
 function toRows(payload) {
@@ -347,9 +352,76 @@ async function enrichSurgeryRows({ rows, feeno, chartNo, onepageBase, appToken, 
         // Try the next possible detail endpoint.
       }
     }
+    try {
+      const noteDetail = await fetchSurgeryNoteXml({ row: merged, feeno, chartNo, onepageBase, appToken, authToken, fetchImpl });
+      if (noteDetail && Object.keys(noteDetail).length) {
+        merged = { ...merged, ...noteDetail };
+      }
+    } catch {
+      // The list endpoint still provides basic surgery fields when the note XML is unavailable.
+    }
     enriched.push(merged);
   }
   return enriched;
+}
+
+async function fetchSurgeryNoteXml({ row, feeno, chartNo, onepageBase, appToken, authToken, fetchImpl }) {
+  const xml = await postOnepageText({
+    onepageBase,
+    path: "surgery.get_note",
+    params: {
+      ...requestParams(feeno, chartNo),
+      key: firstValue(row.key, row.id, row.no),
+      chr_no: firstValue(row.chr_no, chartNo),
+      no: firstValue(row.no, row.seq_no, row.op_no),
+      content: true,
+    },
+    appToken,
+    authToken,
+    fetchImpl,
+    accept: "application/xml, text/xml, text/plain, */*",
+  });
+  if (!xml || !/<OPNOTE_Record\b/i.test(xml)) return {};
+  const operativeProcedure = cleanSurgeryReport(xmlTagText(xml, "Ope_Procedure"));
+  const operativeFindings = cleanSurgeryReport(xmlTagText(xml, "Ope_Operative_Findings"));
+  return {
+    xml_report: xml,
+    operativeProcedure,
+    operativeFindings,
+    finding: operativeFindings || row.finding,
+    room: firstValue(xmlTagText(xml, "Room_Number"), row.room),
+    start: firstValue(xmlTagText(xml, "OP_Start_Time"), row.start),
+    end: firstValue(xmlTagText(xml, "OP_End_Time"), row.end),
+    finish_date: firstValue(xmlTagText(xml, "OPR_REDT"), row.finish_date),
+  };
+}
+
+function xmlTagText(xml, tagName) {
+  const pattern = new RegExp(`<${escapeRegExp(tagName)}(?:\\s[^>]*)?>([\\s\\S]*?)<\\/${escapeRegExp(tagName)}>`, "i");
+  const match = pattern.exec(String(xml || ""));
+  return match ? decodeXmlText(match[1]) : "";
+}
+
+function decodeXmlText(value) {
+  return String(value || "")
+    .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1")
+    .replace(/&lt;br\s*\/?&gt;/gi, "\n")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/\r/g, "")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function normalizeSurgeries(rows) {
@@ -374,6 +446,7 @@ function normalizeSurgeries(rows) {
     const sectionText = cleanSurgeryReport([
       reportText,
       row.operativeProcedure,
+      row.operativeFindings,
       row.operative_procedure,
       row.operative_procedure_text,
       row.op_procedure,
