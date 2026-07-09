@@ -43,6 +43,9 @@ export async function fetchOnepageClinicalSource({
   if (source === "pathology") {
     return fetchPathology({ feeno, chartNo, onepageBase, appToken, authToken, fetchImpl });
   }
+  if (source === "surgeries") {
+    return fetchSurgeries({ feeno, chartNo, onepageBase, appToken, authToken, fetchImpl });
+  }
 
   const errors = [];
   let emptyResult = null;
@@ -74,6 +77,36 @@ export async function fetchOnepageClinicalSource({
 
   if (emptyResult) return emptyResult;
   throw new Error(errors.slice(0, 3).join(" | ") || "no Onepage endpoint returned data");
+}
+
+async function fetchSurgeries({ feeno, chartNo, onepageBase, appToken, authToken, fetchImpl }) {
+  const errors = [];
+  let emptyResult = null;
+  for (const endpoint of SOURCE_CONFIG.surgeries.endpoints) {
+    try {
+      const payload = await postOnepageApi({
+        onepageBase,
+        path: endpoint,
+        params: requestParams(feeno, chartNo),
+        appToken,
+        authToken,
+        fetchImpl,
+      });
+      const rows = toRows(payload);
+      const enrichedRows = await enrichSurgeryRows({ rows, feeno, chartNo, onepageBase, appToken, authToken, fetchImpl });
+      const normalized = normalizeSurgeries(enrichedRows);
+      if (!normalized.length && !rows.length && !emptyResult) {
+        emptyResult = { source: "surgeries", endpoint, rows: [], raw: [] };
+      }
+      if (normalized.length) {
+        return { source: "surgeries", endpoint, rows: normalized, raw: enrichedRows };
+      }
+    } catch (error) {
+      errors.push(`${endpoint}: ${error.message}`);
+    }
+  }
+  if (emptyResult) return emptyResult;
+  throw new Error(errors.slice(0, 3).join(" | ") || "no Onepage surgery endpoint returned data");
 }
 
 async function fetchPathology({ feeno, chartNo, onepageBase, appToken, authToken, fetchImpl }) {
@@ -280,11 +313,77 @@ async function enrichImageRows({ rows, feeno, chartNo, onepageBase, appToken, au
   return enriched;
 }
 
+async function enrichSurgeryRows({ rows, feeno, chartNo, onepageBase, appToken, authToken, fetchImpl }) {
+  const detailEndpoints = ["surgery.get", "surgery.detail", "operation.get", "operation.detail"];
+  const enriched = [];
+  for (const row of rows.slice(0, 30)) {
+    let merged = row;
+    for (const endpoint of detailEndpoints) {
+      try {
+        const detail = await postOnepageApi({
+          onepageBase,
+          path: endpoint,
+          params: {
+            ...requestParams(feeno, chartNo),
+            id: firstValue(row.id, row.key, row.no, row.seq_no, row.op_no, row.operation_no),
+            key: firstValue(row.key, row.id, row.no),
+            no: firstValue(row.no, row.seq_no, row.op_no),
+            seq_no: firstValue(row.seq_no, row.no),
+            op_no: firstValue(row.op_no, row.no),
+            operation_no: firstValue(row.operation_no, row.op_no, row.no),
+            room: firstValue(row.room),
+            date: firstValue(row.date, row.op_date, row.operation_date),
+          },
+          appToken,
+          authToken,
+          fetchImpl,
+        });
+        const detailRow = Array.isArray(detail) ? detail[0] : detail;
+        if (detailRow && typeof detailRow === "object" && Object.keys(detailRow).length) {
+          merged = { ...merged, ...detailRow };
+          break;
+        }
+      } catch {
+        // Try the next possible detail endpoint.
+      }
+    }
+    enriched.push(merged);
+  }
+  return enriched;
+}
+
 function normalizeSurgeries(rows) {
   return sortByTimeDesc(rows.map((row) => ({
     date: formatDate(firstValue(row.date, row.op_date, row.operation_date)),
     procedure: firstValue(row.surgery, row.procedure, row.operation, row.op_name, row.name, row.title),
     operation: firstValue(row.operation),
+    operativeProcedure: cleanReport(firstValue(
+      row.operative_procedure,
+      row.op_procedure,
+      row.operation_procedure,
+      row.oper_proc,
+      row.op_proc,
+      row.proc,
+      row.proc_desc,
+      row.procedure_note,
+      row.procedure_text,
+      row.operation_note,
+      row.op_note,
+      row.op_record,
+      row.op_description,
+      row.operation_record,
+      row.operation_description,
+      row.record_detail,
+      row.detail,
+      row.details,
+      row.op_method,
+      row.method,
+      row.methods,
+      row.術式,
+      row.手術步驟,
+      row.手術過程,
+      row.手術方法
+    )),
     room: firstValue(row.room),
     dept: firstValue(row.dept),
     key: firstValue(row.key),
@@ -332,9 +431,12 @@ function normalizePathology(rows) {
       clinicalInfo,
       row.報告
     ));
+    const type = firstValue(row.title, row.name, row.exam_name, row.order_name, row.specimen, row.tissue, row.type, row.檢查名稱) || "病理報告";
+    const title = meaningfulPathologyTitle({ type, diagnosis, report, specimen: firstValue(row.specimen, row.tissue, row.part, row.organ, row.檢體) });
     return {
       date: formatDate(firstValue(row.date, row.report_date, row.patho_date, row.order_date, row.result_date, row.日期)),
-      type: firstValue(row.type, row.title, row.name, row.exam_name, row.order_name, row.specimen, row.tissue, row.檢查名稱) || "病理報告",
+      type,
+      title,
       source: "Patho",
       diagnosis,
       report,
@@ -342,6 +444,22 @@ function normalizePathology(rows) {
       clinicalInfo,
     };
   }).filter((row) => row.date || row.type || row.diagnosis || row.report), (row) => row.date);
+}
+
+function meaningfulPathologyTitle({ type, diagnosis, report, specimen }) {
+  const candidates = [diagnosis, specimen, type, report];
+  for (const candidate of candidates) {
+    const title = firstReportLine(candidate);
+    if (title && !/^patho(?:logy)?$/i.test(title) && title !== "病理報告") return title;
+  }
+  return "病理報告";
+}
+
+function firstReportLine(value) {
+  return String(value || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find(Boolean) || "";
 }
 
 function formatPeople(value) {

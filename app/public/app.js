@@ -265,7 +265,7 @@ function roundingSummary(patient) {
       <div class="rounding-heading">
         <div>
           <p class="eyebrow">查房總覽</p>
-          <h3>${escapeHtml(patient.chartNo || patient.patientRef || "未指定")}${patient.bedNo ? ` · 床 ${escapeHtml(patient.bedNo)}` : ""}</h3>
+          <h3>${escapeHtml(patient.chartNo || patient.patientRef || "未指定")}${patient.bedNo ? ` · ${escapeHtml(patient.bedNo)}` : ""}</h3>
         </div>
       </div>
       <div class="coverage-grid">
@@ -289,7 +289,7 @@ function buildCoverage(patient) {
   const has = (value) => Array.isArray(value) ? value.length > 0 : !!value;
   const assessment = patient.clinicalContext?.adultAdmissionAssessment;
   return [
-    { label: "病人識別", value: patient.displayName && patient.displayName !== "待由 Onepage 識別" ? "已確認" : "待確認", detail: patient.bedNo ? `床 ${patient.bedNo}` : "床號尚未讀取", status: patient.displayName && patient.displayName !== "待由 Onepage 識別" ? "ok" : "warn" },
+    { label: "病人識別", value: patient.displayName && patient.displayName !== "待由 Onepage 識別" ? "已確認" : "待確認", detail: patient.bedNo ? patient.bedNo : "床號尚未讀取", status: patient.displayName && patient.displayName !== "待由 Onepage 識別" ? "ok" : "warn" },
     { label: "住院醫囑", value: has(patient.orders) ? `${patient.orders.length} 筆` : "尚未擷取", detail: has(patient.orders) ? "請至醫囑分頁核對 active / DC" : "需要 Onepage / NIS 資料", status: has(patient.orders) ? "ok" : "missing" },
     { label: "入院評估", value: assessment ? "已擷取" : "尚未擷取", detail: assessment?.admissionReason || "入院原因與病史", status: assessment ? "ok" : "missing" },
     { label: "TPR", value: has(patient.tpr) ? `${patient.tpr.length} 筆` : "尚未擷取", detail: has(patient.tpr) ? "已依時間由新到舊排列" : "不可視為正常", status: has(patient.tpr) ? "ok" : "missing" },
@@ -315,7 +315,7 @@ function sourceBadge(status) {
 function buildStructuredRoundingNote(patient, coverage) {
   const assessment = patient.clinicalContext?.adultAdmissionAssessment || {};
   const lines = [
-    `【查房摘要｜${patient.chartNo || patient.patientRef || "未指定"}${patient.bedNo ? `｜床 ${patient.bedNo}` : ""}】`,
+    `【查房摘要｜${patient.chartNo || patient.patientRef || "未指定"}${patient.bedNo ? `｜${patient.bedNo}` : ""}】`,
     `資料更新：${patient.updatedAt ? new Date(patient.updatedAt).toLocaleString("zh-TW", { hour12: false }) : "未提供"}`,
     `住院狀態：${admissionPeriodLabel(patient) || "尚未擷取"}`,
     `住院原因：${assessment.admissionReason || patient.clinicalContext?.admissionReason?.text || "尚未擷取"}`,
@@ -473,7 +473,7 @@ function summaryExpandableList(label, rows, titleFormatter, bodyFormatter) {
   const row = rows[0];
   return `
     <details class="summary-imaging">
-      <summary>${escapeHtml(label)}：${escapeHtml(titleFormatter(row))}，點開查看</summary>
+      <summary>${escapeHtml(label)}：${escapeHtml(titleFormatter(row))}</summary>
       <div class="summary-imaging-list">
         <article>
           <strong>${escapeHtml(titleFormatter(row))}</strong>
@@ -497,11 +497,18 @@ function surgerySummaryTitle(row) {
 }
 
 function surgerySummaryBody(row) {
-  return [row.diagPre ? `術前診斷：${row.diagPre}` : "", row.diagPost ? `術後診斷：${row.diagPost}` : "", row.finding || row.note || ""].filter(Boolean).join("\n") || "有手術標題，尚無詳細報告";
+  const operativeProcedure = surgeryOperativeProcedure(row);
+  return [
+    row.diagPre ? `術前診斷：${row.diagPre}` : "",
+    row.diagPost ? `術後診斷：${row.diagPost}` : "",
+    operativeProcedure ? `Operative Procedure：\n${operativeProcedure}` : "",
+    row.finding ? `Operative Findings：\n${row.finding}` : "",
+    row.note && row.note !== row.finding && row.note !== operativeProcedure ? row.note : "",
+  ].filter(Boolean).join("\n") || "有手術標題，尚無詳細報告";
 }
 
 function pathologySummaryTitle(row) {
-  return [row.source || "Patho", row.date, row.type || row.specimen || "病理報告"].filter(Boolean).join(" · ");
+  return [row.source || "Patho", row.date, pathologyDisplayTitle(row)].filter(Boolean).join(" · ");
 }
 
 function pathologySummaryBody(row) {
@@ -515,7 +522,7 @@ function admissionStayBanner(patient) {
     <div class="admission-stay-banner">
       <strong>住院區間</strong>
       <span>${escapeHtml(label)}</span>
-      ${patient.bedNo ? `<small>床 ${escapeHtml(patient.bedNo)}</small>` : ""}
+      ${patient.bedNo ? `<small>${escapeHtml(patient.bedNo)}</small>` : ""}
     </div>
   `;
 }
@@ -725,7 +732,7 @@ function renderPathology(pathology) {
         ${pathology.map((row, index) => `
           <a class="surgery-list-item" href="#pathology-${index}">
             <span>${escapeHtml([row.source || "Patho", row.date || ""].filter(Boolean).join(" · "))}</span>
-            <strong>${escapeHtml(row.type || row.specimen || "病理報告")}</strong>
+            <strong>${escapeHtml(pathologyDisplayTitle(row))}</strong>
           </a>
         `).join("")}
       </div>
@@ -753,14 +760,15 @@ function imagingRecord(row, index) {
 }
 
 function pathologyRecord(row, index) {
+  const title = pathologyDisplayTitle(row);
   return `
     <article id="pathology-${index}" class="surgery-record pathology-record">
       <div class="record-heading">
         <div>
           <p class="eyebrow">${escapeHtml(row.date || "")}</p>
-          <h3>${escapeHtml([row.source || "Patho", row.type || row.specimen || "病理報告"].filter(Boolean).join(" · "))}</h3>
+          <h3>${escapeHtml(title)}</h3>
         </div>
-        <span>${escapeHtml(row.specimen || "")}</span>
+        <span>${escapeHtml([row.source || "Patho", row.specimen || ""].filter(Boolean).join(" · "))}</span>
       </div>
       ${row.diagnosis ? `<section class="record-block"><h4>Diagnosis</h4><pre>${escapeHtml(row.diagnosis)}</pre></section>` : ""}
       ${row.report ? `<section class="record-block"><h4>Report</h4><pre>${escapeHtml(row.report)}</pre></section>` : ""}
@@ -769,7 +777,30 @@ function pathologyRecord(row, index) {
   `;
 }
 
+function pathologyDisplayTitle(row = {}) {
+  const candidates = [
+    row.title,
+    row.diagnosis,
+    row.specimen,
+    row.type,
+    row.report,
+  ];
+  for (const candidate of candidates) {
+    const title = firstDisplayLine(candidate);
+    if (title && !/^patho(?:logy)?$/i.test(title) && title !== "病理報告") return title;
+  }
+  return "病理報告";
+}
+
+function firstDisplayLine(value) {
+  return String(value || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find(Boolean) || "";
+}
+
 function surgeryRecord(row, index) {
+  const operativeProcedure = surgeryOperativeProcedure(row);
   const fields = [
     ["房號", row.room],
     ["流水序號", row.key],
@@ -805,10 +836,15 @@ function surgeryRecord(row, index) {
       <dl class="detail-grid">
         ${fields.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join("")}
       </dl>
+      ${operativeProcedure ? `<section class="record-block"><h4>Operative Procedure</h4><pre>${escapeHtml(operativeProcedure)}</pre></section>` : ""}
       ${row.finding ? `<section class="record-block"><h4>Operative Findings</h4><pre>${escapeHtml(row.finding)}</pre></section>` : ""}
-      ${row.note && row.note !== row.finding ? `<section class="record-block"><h4>備註 / 紀錄</h4><pre>${escapeHtml(row.note)}</pre></section>` : ""}
+      ${row.note && row.note !== row.finding && row.note !== operativeProcedure ? `<section class="record-block"><h4>備註 / 紀錄</h4><pre>${escapeHtml(row.note)}</pre></section>` : ""}
     </article>
   `;
+}
+
+function surgeryOperativeProcedure(row = {}) {
+  return row.operativeProcedure || row.operation || "";
 }
 
 function renderNursing(nursing) {
@@ -1331,7 +1367,20 @@ el.physicianRosterForm.addEventListener("submit", (event) => {
   loadPhysicianRoster(el.physicianQuery.value);
 });
 
-el.reloadRecent.addEventListener("click", loadRecent);
+el.reloadRecent.addEventListener("click", async () => {
+  const originalText = el.reloadRecent.textContent;
+  el.reloadRecent.disabled = true;
+  el.reloadRecent.textContent = "…";
+  try {
+    await loadRecent();
+    el.serviceStatus.textContent = "最近擷取已更新";
+  } catch {
+    el.recentList.innerHTML = `<div class="empty-state compact">讀取失敗，請確認登入狀態。</div>`;
+  } finally {
+    el.reloadRecent.textContent = originalText || "↻";
+    el.reloadRecent.disabled = !state.user;
+  }
+});
 el.openRosterPatients.addEventListener("click", openPhysicianRosterPatients);
 el.refreshPatient.addEventListener("click", refreshPatient);
 document.addEventListener("click", async (event) => {
