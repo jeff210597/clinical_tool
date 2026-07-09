@@ -14,6 +14,7 @@ export default {
 async function handleRequest(request, env) {
   const url = new URL(request.url);
   if (request.method === "OPTIONS") return cors(new Response(null, { status: 204 }));
+  if (request.method === "GET" && url.pathname === "/") return html(pocHtml());
   if (request.method === "GET" && url.pathname === "/health") {
     return json({ ok: true, service: "clinical-tool-cloudflare-shadow", time: new Date().toISOString() });
   }
@@ -203,6 +204,13 @@ function json(payload, status = 200) {
   }));
 }
 
+function html(markup, status = 200) {
+  return cors(new Response(markup, {
+    status,
+    headers: { "content-type": "text/html; charset=utf-8" },
+  }));
+}
+
 function cors(response) {
   const headers = new Headers(response.headers);
   headers.set("access-control-allow-origin", "*");
@@ -214,4 +222,92 @@ function cors(response) {
 
 function redact(value) {
   return String(value || "").replace(/[A-Za-z0-9_\-.]{24,}/g, "[redacted]");
+}
+
+function pocHtml() {
+  return `<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Clinical Tool Cloudflare POC</title>
+    <style>
+      :root { color-scheme: light; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+      body { margin: 0; background: #f6f8fb; color: #172033; }
+      main { max-width: 920px; margin: 0 auto; padding: 24px; }
+      .card { background: #fff; border: 1px solid #dfe7ef; border-radius: 10px; padding: 18px; margin: 14px 0; }
+      label { display: block; font-size: 13px; color: #5b677a; margin: 10px 0 4px; }
+      input, select, button { font: inherit; }
+      input, select { width: 100%; box-sizing: border-box; border: 1px solid #cbd5e1; border-radius: 8px; padding: 10px; }
+      button { border: 0; border-radius: 8px; padding: 10px 14px; background: #047d76; color: #fff; font-weight: 700; }
+      button:disabled { opacity: .55; }
+      pre { white-space: pre-wrap; word-break: break-word; background: #0f172a; color: #e2e8f0; border-radius: 8px; padding: 14px; }
+      .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+      .note { color: #64748b; font-size: 13px; line-height: 1.5; }
+      @media (max-width: 720px) { .row { grid-template-columns: 1fr; } }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Cloudflare 影子工作站 POC</h1>
+      <p class="note">這個頁面只測試 Cloudflare mailbox。院內端必須主動輪詢 Cloudflare；本頁不會，也不能，直接連回院內電腦。</p>
+      <section class="card">
+        <div class="row">
+          <div><label for="apiBase">Worker API URL</label><input id="apiBase" /></div>
+          <div><label for="pin">PIN</label><input id="pin" type="password" autocomplete="off" /></div>
+        </div>
+        <label for="type">Request type</label>
+        <select id="type">
+          <option value="echo">echo 測試，不抓病人資料</option>
+          <option value="summary">病人摘要</option>
+          <option value="ward">醫師住院清單</option>
+        </select>
+        <label for="query">查詢內容</label>
+        <input id="query" placeholder="echo 文字 / 病歷號 / 醫師員編" />
+        <p><button id="send">送出測試 request</button></p>
+      </section>
+      <section class="card"><h2>狀態</h2><pre id="status">尚未送出。</pre></section>
+    </main>
+    <script>
+      const $ = (id) => document.querySelector(id);
+      const apiBase = $("#apiBase"), pin = $("#pin"), type = $("#type"), query = $("#query"), statusBox = $("#status"), send = $("#send");
+      apiBase.value = localStorage.getItem("cfShadowApiBase") || location.origin;
+      pin.value = localStorage.getItem("cfShadowPin") || "";
+      send.addEventListener("click", async () => {
+        send.disabled = true;
+        try {
+          localStorage.setItem("cfShadowApiBase", apiBase.value.trim());
+          localStorage.setItem("cfShadowPin", pin.value);
+          const payload = type.value === "ward" ? { doctorId: query.value.trim() } : type.value === "summary" ? { query: query.value.trim() } : { text: query.value.trim() || "hello from cloudflare poc" };
+          setStatus({ step: "creating", payload });
+          const created = await post("/api/cf-shadow/request", { type: type.value, payload, pin: pin.value });
+          setStatus({ step: "created", created });
+          for (let i = 0; i < 40; i += 1) {
+            await new Promise((resolve) => setTimeout(resolve, 1500));
+            const result = await get("/api/cf-shadow/result/" + encodeURIComponent(created.id) + "?pin=" + encodeURIComponent(pin.value));
+            setStatus({ step: "poll", attempt: i + 1, result });
+            if (["done", "error", "expired"].includes(result.status)) break;
+          }
+        } catch (error) {
+          setStatus({ error: error.message || String(error) });
+        } finally {
+          send.disabled = false;
+        }
+      });
+      async function post(path, body) {
+        const response = await fetch(apiBase.value.replace(/\\/$/, "") + path, { method: "POST", headers: { "content-type": "application/json", "x-shadow-pin": pin.value }, body: JSON.stringify(body) });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(payload.message || payload.error || "HTTP " + response.status);
+        return payload;
+      }
+      async function get(path) {
+        const response = await fetch(apiBase.value.replace(/\\/$/, "") + path, { headers: { "x-shadow-pin": pin.value } });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok && response.status !== 410) throw new Error(payload.message || payload.error || "HTTP " + response.status);
+        return payload;
+      }
+      function setStatus(value) { statusBox.textContent = JSON.stringify(value, null, 2); }
+    </script>
+  </body>
+</html>`;
 }

@@ -1,6 +1,6 @@
 # Cloudflare Shadow Workstation POC
 
-This POC uses Cloudflare only as a public static page and request/result mailbox.
+This POC uses Cloudflare only as a public test page and request/result mailbox.
 
 It does **not** use Cloudflare Tunnel, WARP, Zero Trust remote access, reverse VPN, port forwarding, or any inbound connection to the hospital workstation.
 
@@ -9,7 +9,7 @@ It does **not** use Cloudflare Tunnel, WARP, Zero Trust remote access, reverse V
 Allowed flow:
 
 ```text
-Phone browser -> Cloudflare Pages/Worker over HTTPS
+Phone browser -> Cloudflare Worker over HTTPS
 Hospital workstation relay agent -> Cloudflare Worker over outbound HTTPS polling
 Hospital workstation relay agent -> Onepage/NIS inside hospital network
 ```
@@ -28,7 +28,7 @@ The relay agent only makes normal outbound HTTPS requests to the configured Work
 
 - `cloudflare/worker.mjs` - Worker API mailbox.
 - `cloudflare/schema.sql` - D1 schema.
-- `cloudflare/pages/index.html` - minimal test page.
+- `cloudflare/pages/index.html` - minimal standalone test page, kept as a reference.
 - `cloudflare/wrangler.toml.example` - deployment template.
 - `app/relay/cloudflare_poll_agent.mjs` - hospital-side outbound polling agent.
 - `Start_Cloudflare_Relay_Agent.cmd` - echo-only starter.
@@ -72,7 +72,7 @@ Deploy Worker:
 npx wrangler deploy --config cloudflare/wrangler.toml
 ```
 
-Deploy the test page with Cloudflare Pages, using `cloudflare/pages` as static output.
+Open the Worker URL directly to use the built-in test page. Cloudflare Pages is not required for the POC.
 
 ## Local Agent Configuration
 
@@ -104,7 +104,7 @@ Only after connectivity is proven should `CF_SHADOW_ECHO_ONLY` be removed.
 ## Safety Checklist Before Clinical Use
 
 - Verify `GET /health` works from the hospital workstation.
-- Verify `--echo-only` request/response works from phone browser.
+- Verify `--echo-only` request/response works from the Worker root page in the phone browser.
 - Confirm no process is listening for public inbound traffic.
 - Confirm no Cloudflare Tunnel/WARP/Zero Trust tunnel is installed or running for this workflow.
 - Keep TTL short, currently 10 minutes by default.
