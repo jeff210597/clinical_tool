@@ -18,6 +18,8 @@ npm-debug.log*
 *.token
 .netlify/
 dist/
+cloudflare/.dev.vars
+cloudflare/wrangler.toml
 netlify/functions/_shared/shadow-local-secrets.json
 netlify/functions/_shared/shadow-local-secrets.mjs
 Thumbs.db

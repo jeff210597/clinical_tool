@@ -1,0 +1,11 @@
+name = "clinical-tool-shadow-poc"
+main = "worker.mjs"
+compatibility_date = "2026-07-09"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "clinical-tool-shadow-poc"
+database_id = "<fill after creating D1 database>"
+
+[vars]
+CF_SHADOW_TTL_SECONDS = "600"

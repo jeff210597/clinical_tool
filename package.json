@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "build": "node scripts/build-shadow.mjs",
-    "check": "node --check netlify/functions/shadow-request.mjs && node --check netlify/functions/shadow-pending.mjs && node --check netlify/functions/shadow-result.mjs && node --check app/relay/shadow_poll_agent.mjs && node scripts/build-shadow.mjs"
+    "check": "node --check netlify/functions/shadow-request.mjs && node --check netlify/functions/shadow-pending.mjs && node --check netlify/functions/shadow-result.mjs && node --check app/relay/shadow_poll_agent.mjs && node --check app/relay/cloudflare_poll_agent.mjs && node --check cloudflare/worker.mjs && node scripts/build-shadow.mjs",
+    "check:cloudflare-poc": "node --check cloudflare/worker.mjs && node --check app/relay/cloudflare_poll_agent.mjs && node cloudflare/test_worker_poc.mjs"
   },
   "dependencies": {
     "@netlify/blobs": "^10.7.9"
