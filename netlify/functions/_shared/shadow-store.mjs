@@ -2,7 +2,7 @@ import { getStore } from "@netlify/blobs";
 import { readFileSync } from "node:fs";
 
 export const STORE_NAME = "clinical-shadow";
-const SHADOW_LOCAL_SECRETS = readLocalSecrets();
+const SHADOW_LOCAL_SECRETS = await readLocalSecrets();
 
 export function store() {
   return getStore({ name: STORE_NAME, consistency: "strong" });
@@ -12,7 +12,13 @@ export function env(name, fallback = "") {
   return globalThis.Netlify?.env?.get(name) || process.env[name] || SHADOW_LOCAL_SECRETS[name] || fallback;
 }
 
-function readLocalSecrets() {
+async function readLocalSecrets() {
+  try {
+    const module = await import("./shadow-local-secrets.mjs");
+    return module.SHADOW_LOCAL_SECRETS || {};
+  } catch {
+    // Fall through to JSON fallback for non-bundled local tests.
+  }
   try {
     return JSON.parse(readFileSync(new URL("./shadow-local-secrets.json", import.meta.url), "utf8"));
   } catch {

@@ -12,7 +12,7 @@
         <header>
           <p class="eyebrow">Shadow Workstation</p>
           <h1>影子查房工作站</h1>
-          <p id="status">等待登入</p>
+          <p id="status">等待 PIN</p>
         </header>
 
         <section class="card">
@@ -49,7 +49,28 @@
       </aside>
 
       <main class="content">
-        <nav id="patientTabs" class="patient-tabs"></nav>
+        <header class="patient-header">
+          <div>
+            <p class="eyebrow">目前病人</p>
+            <h2 id="patientTitle">尚未選擇</h2>
+            <p id="patientMeta">先輸入 PIN，再查醫師清單或病人摘要。</p>
+          </div>
+          <button id="refreshPatient" type="button" disabled>重新整理</button>
+        </header>
+        <nav id="patientTabs" class="patient-tabs" aria-label="已開啟病人"></nav>
+        <nav id="dataTabs" class="tabs" aria-label="資料分頁">
+          <button class="tab is-active" data-tab="summary" type="button">摘要</button>
+          <button class="tab" data-tab="tpr" type="button">TPR</button>
+          <button class="tab" data-tab="labs" type="button">Labs</button>
+          <button class="tab" data-tab="io" type="button">輸入輸出</button>
+          <button class="tab" data-tab="imaging" type="button">影像</button>
+          <button class="tab" data-tab="surgery" type="button">手術</button>
+          <button class="tab" data-tab="pathology" type="button">病理</button>
+          <button class="tab" data-tab="orders" type="button">醫囑</button>
+          <button class="tab" data-tab="nursing" type="button">護理</button>
+          <button class="tab" data-tab="glucose" type="button">血糖</button>
+          <button class="tab" data-tab="ai" type="button">AI 判讀</button>
+        </nav>
         <section id="resultPanel" class="panel">
           <div class="empty">先輸入 PIN，再查醫師清單或病人摘要。</div>
         </section>

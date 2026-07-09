@@ -5,9 +5,12 @@
   --text: #17202a;
   --muted: #64748b;
   --accent: #0f766e;
+  --accent-strong: #115e59;
   --accent-soft: #ccfbf1;
   --ok-soft: #ecfdf5;
   --warn-soft: #fff7ed;
+  --danger: #b91c1c;
+  --low: #1d4ed8;
 }
 
 * {
@@ -62,8 +65,13 @@ input {
   padding: 18px;
 }
 
-h1 {
+h1,
+h2,
+h3 {
   margin: 0;
+}
+
+h1 {
   font-size: 22px;
 }
 
@@ -141,11 +149,31 @@ label {
   padding: 22px;
 }
 
-.patient-tabs {
+.patient-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+.patient-header button {
+  flex: 0 0 auto;
+}
+
+.patient-tabs,
+.tabs {
   display: flex;
   gap: 6px;
   overflow-x: auto;
-  margin-bottom: 14px;
+}
+
+.patient-tabs {
+  margin: 16px 0 0;
+}
+
+.tabs {
+  margin: 16px 0 0;
+  border-bottom: 1px solid var(--line);
 }
 
 .patient-tab {
@@ -162,11 +190,36 @@ label {
   font-weight: 700;
 }
 
+.tab {
+  flex: 0 0 auto;
+  border: 0;
+  border-bottom: 3px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+}
+
+.tab.is-active {
+  border-bottom-color: var(--accent);
+  color: var(--accent-strong);
+  font-weight: 700;
+}
+
 .panel {
+  margin-top: 18px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--panel);
   padding: 16px;
+}
+
+.empty {
+  padding: 30px 0;
+  text-align: center;
+}
+
+.empty.compact {
+  padding: 12px 0;
 }
 
 .summary-text {
@@ -176,7 +229,9 @@ label {
   margin: 0;
 }
 
-.result-header {
+.result-header,
+.record-heading,
+.io-day-heading {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
@@ -199,6 +254,185 @@ label {
   background: var(--warn-soft);
 }
 
+.admission-stay-banner,
+.ai-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  border: 1px solid #bbf7d0;
+  border-radius: 6px;
+  background: var(--ok-soft);
+  color: #14532d;
+  padding: 10px 12px;
+  margin: 0 0 14px;
+}
+
+.admission-stay-banner span {
+  font-size: 18px;
+  font-weight: 800;
+}
+
+.table-wrap {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.data-table th,
+.data-table td {
+  border-bottom: 1px solid var(--line);
+  padding: 9px 8px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.data-table th {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.lab-section,
+.io-day-card,
+.report-record,
+.record-item {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 12px;
+  margin-bottom: 12px;
+  background: #fff;
+}
+
+.lab-section h3,
+.io-day-card h3 {
+  margin-bottom: 8px;
+}
+
+.lab-high,
+.flag-high,
+.trend-up {
+  color: var(--danger);
+  font-weight: 700;
+}
+
+.lab-low,
+.flag-low,
+.trend-down {
+  color: var(--low);
+  font-weight: 700;
+}
+
+.trend-flat {
+  color: var(--muted);
+}
+
+.io-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(120px, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.io-summary div {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 10px;
+  background: #fff;
+}
+
+.io-summary span {
+  display: block;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.io-grid,
+.context-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+
+.io-day-heading div {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.io-detail pre,
+.record-block pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: inherit;
+  line-height: 1.5;
+}
+
+.report-layout {
+  display: grid;
+  grid-template-columns: minmax(190px, 260px) minmax(0, 1fr);
+  gap: 14px;
+  min-height: 65vh;
+}
+
+.report-list,
+.report-records {
+  overflow-y: auto;
+  max-height: 72vh;
+}
+
+.report-list {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  padding-right: 4px;
+}
+
+.report-list-item {
+  display: block;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 10px;
+  background: #fff;
+  color: var(--text);
+  text-decoration: none;
+}
+
+.report-list-item span {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(180px, 1fr));
+  gap: 8px 14px;
+  margin: 0 0 10px;
+}
+
+.detail-grid dt {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.detail-grid dd {
+  margin: 2px 0 0;
+}
+
+.record-block {
+  border-top: 1px solid #eef2f7;
+  padding-top: 10px;
+  margin-top: 10px;
+}
+
+.bullet-list {
+  line-height: 1.7;
+}
+
 @media (max-width: 780px) {
   .shell {
     grid-template-columns: 1fr;
@@ -211,5 +445,29 @@ label {
 
   .content {
     padding: 14px;
+  }
+
+  .patient-header,
+  .result-header {
+    display: block;
+  }
+
+  .report-layout,
+  .io-grid,
+  .context-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .report-list,
+  .report-records {
+    max-height: none;
+  }
+
+  .io-summary {
+    grid-template-columns: repeat(2, minmax(120px, 1fr));
+  }
+
+  .detail-grid {
+    grid-template-columns: 1fr;
   }
 }
