@@ -153,6 +153,9 @@ function admissionFromProfile(profile) {
     bedNo: firstValue(ipd?.bed_no, ipd?.bed, ipd?.bedNo, profile.bed_no, profile.bedNo),
     feeNo: firstValue(ipd?.fee_no, ipd?.feeno, ipd?.feeNo, ipd?.fee_no_ori, profile.fee_no, profile.feeno, profile.feeNo),
     dept: firstValue(ipd?.dept_name, ipd?.dept, ipd?.div_name, profile.dept_name, profile.dept),
+    admitDate: admissionStartDate(ipd, profile),
+    dischargeDate: admissionEndDate(ipd, profile),
+    status: admissionStatus(ipd, profile),
     current: ipd?.current,
     raw: profile,
   };
@@ -191,9 +194,68 @@ function normalizeAdmission(item) {
     bedNo: firstValue(item.bed_no, item.bed, item.bedNo, ipd?.bed_no, ipd?.bed, ipd?.bedNo),
     feeNo: firstValue(item.fee_no, item.feeno, item.feeNo, ipd?.fee_no, ipd?.feeno, ipd?.feeNo, ipd?.fee_no_ori),
     dept: firstValue(item.dept_name, item.dept, item.div_name, ipd?.dept_name, ipd?.dept, ipd?.div_name),
+    admitDate: admissionStartDate(item, ipd),
+    dischargeDate: admissionEndDate(item, ipd),
+    status: admissionStatus(item, ipd),
     current: item.current ?? ipd?.current,
     raw: item.raw || item,
   };
+}
+
+function admissionStartDate(...objects) {
+  return firstValueFromObjects(objects, [
+    "start",
+    "start_date",
+    "startDate",
+    "admit_date",
+    "admitDate",
+    "admission_date",
+    "admissionDate",
+    "in_date",
+    "inDate",
+    "ipd_date",
+    "ipdDate",
+    "begin_date",
+    "beginDate",
+    "fee_start",
+    "feeStart",
+  ]);
+}
+
+function admissionEndDate(...objects) {
+  return firstValueFromObjects(objects, [
+    "end",
+    "end_date",
+    "endDate",
+    "discharge_date",
+    "dischargeDate",
+    "dc_date",
+    "dcDate",
+    "out_date",
+    "outDate",
+    "leave_date",
+    "leaveDate",
+    "fee_end",
+    "feeEnd",
+  ]);
+}
+
+function admissionStatus(...objects) {
+  const status = firstValueFromObjects(objects, ["status", "status_name", "statusName", "ipd_status", "ipdStatus"]);
+  if (/出院|discharge|closed|結案/i.test(status)) return "discharged";
+  if (/住院|current|active|open/i.test(status)) return "inpatient";
+  return admissionEndDate(...objects) ? "discharged" : "inpatient";
+}
+
+function firstValueFromObjects(objects, keys) {
+  for (const object of objects) {
+    if (!object || typeof object !== "object") continue;
+    for (const key of keys) {
+      const text = firstValue(object[key]);
+      if (text) return text;
+    }
+  }
+  return "";
 }
 
 function uniqueAdmissions(items) {

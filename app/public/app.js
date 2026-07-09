@@ -17,6 +17,7 @@ const el = {
   physicianQuery: document.querySelector("#physicianQuery"),
   physicianRosterStatus: document.querySelector("#physicianRosterStatus"),
   physicianRosterList: document.querySelector("#physicianRosterList"),
+  openRosterPatients: document.querySelector("#openRosterPatients"),
   loginForm: document.querySelector("#loginForm"),
   loginUser: document.querySelector("#loginUser"),
   loginPassword: document.querySelector("#loginPassword"),
@@ -67,6 +68,7 @@ function renderAuth() {
   el.searchForm.querySelector("button").disabled = !loggedIn;
   el.physicianQuery.disabled = !loggedIn;
   el.physicianRosterForm.querySelector("button").disabled = !loggedIn;
+  el.openRosterPatients.disabled = !loggedIn || !state.physicianRoster.length;
   el.reloadRecent.disabled = !loggedIn;
   if (loggedIn) {
     el.currentUserLabel.textContent = `${state.user.displayName || state.user.username} 已登入`;
@@ -111,6 +113,7 @@ function renderPhysicianRoster(items = [], doctor = state.physicianRosterDoctor,
   state.physicianRoster = items;
   state.physicianRosterDoctor = doctor;
   el.physicianRosterList.innerHTML = "";
+  el.openRosterPatients.disabled = !state.user || !items.length;
   if (!state.user) {
     el.physicianRosterStatus.textContent = "請先登入 Onepage 後查詢醫師住院清單。";
     return;
@@ -128,7 +131,7 @@ function renderPhysicianRoster(items = [], doctor = state.physicianRosterDoctor,
     button.type = "button";
     button.innerHTML = `
       <strong>${escapeHtml(item.name || item.chartNo || "未命名")} · ${escapeHtml(item.bedNo || "待讀取")}</strong>
-      <span>${escapeHtml([item.chartNo, item.dept, item.combineCare ? "共照" : ""].filter(Boolean).join(" · "))}</span>
+      <span>${escapeHtml([item.chartNo, item.dept, item.admitDate ? `入院 ${shortDateLabel(item.admitDate)}` : "", item.combineCare ? "共照" : ""].filter(Boolean).join(" · "))}</span>
     `;
     button.addEventListener("click", () => loadPatient(item.chartNo || item.bedNo || item.feeNo));
     el.physicianRosterList.append(button);
@@ -141,6 +144,25 @@ function patientKey(patient = {}) {
 
 function patientWindowLabel(patient = {}) {
   return [patient.displayName || patient.chartNo || patient.patientRef || "未命名", patient.bedNo || ""].filter(Boolean).join(" · ");
+}
+
+function admissionPeriodLabel(patient = {}) {
+  const period = patient.admissionPeriod || {};
+  const start = shortDateLabel(period.startDate);
+  const end = shortDateLabel(period.endDate);
+  if (start && end) return `${start} ~ ${end}（已出院）`;
+  if (start) return `${start}（住院中）`;
+  if (period.status === "discharged") return "已出院";
+  if (period.status === "inpatient") return "住院中";
+  return "";
+}
+
+function shortDateLabel(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  const match = text.match(/(?:\d{4}[/-])?(\d{1,2})[/-](\d{1,2})/);
+  if (match) return `${Number(match[1])}/${String(Number(match[2])).padStart(2, "0")}`;
+  return text.split(/\s+/)[0];
 }
 
 function upsertOpenPatient(patient) {
@@ -295,6 +317,7 @@ function buildStructuredRoundingNote(patient, coverage) {
   const lines = [
     `【查房摘要｜${patient.chartNo || patient.patientRef || "未指定"}${patient.bedNo ? `｜床 ${patient.bedNo}` : ""}】`,
     `資料更新：${patient.updatedAt ? new Date(patient.updatedAt).toLocaleString("zh-TW", { hour12: false }) : "未提供"}`,
+    `住院狀態：${admissionPeriodLabel(patient) || "尚未擷取"}`,
     `住院原因：${assessment.admissionReason || patient.clinicalContext?.admissionReason?.text || "尚未擷取"}`,
     `診斷：${diagnosisLine(patient)}`,
     `過去病史：${historyLine(patient)}`,
@@ -346,6 +369,7 @@ function summaryClinicalTables(patient) {
   const tprRows = selectSummaryTprRows(patient.tpr || []);
   const labMatrix = selectSummaryLabMatrix(patient.labs || []);
   return `
+    ${admissionStayBanner(patient)}
     <div class="summary-clinical-grid">
       <section>
         <h3>TPR</h3>
@@ -482,6 +506,18 @@ function pathologySummaryTitle(row) {
 
 function pathologySummaryBody(row) {
   return [row.diagnosis ? `Diagnosis：${row.diagnosis}` : "", row.report || ""].filter(Boolean).join("\n") || "有病理標題，尚無詳細報告";
+}
+
+function admissionStayBanner(patient) {
+  const label = admissionPeriodLabel(patient);
+  if (!label) return "";
+  return `
+    <div class="admission-stay-banner">
+      <strong>住院區間</strong>
+      <span>${escapeHtml(label)}</span>
+      ${patient.bedNo ? `<small>床 ${escapeHtml(patient.bedNo)}</small>` : ""}
+    </div>
+  `;
 }
 
 function diagnosisLine(patient) {
@@ -1090,16 +1126,44 @@ function parseDisplayTime(value) {
   return Number.isNaN(time) ? 0 : time;
 }
 
-async function loadPatient(query) {
+async function loadPatient(query, options = {}) {
   if (!state.user) {
     el.loginMessage.textContent = "請先登入工作台，再查詢病人。";
     return;
   }
-  el.patientMeta.textContent = "正在查詢，若最近已擷取會直接使用快取...";
-  el.refreshPatient.disabled = true;
+  const { updateRecent = true, silent = false } = options;
+  if (!silent) {
+    el.patientMeta.textContent = "正在查詢，若最近已擷取會直接使用快取...";
+    el.refreshPatient.disabled = true;
+  }
   const patient = await api("/api/patients/search", { method: "POST", body: JSON.stringify({ query }) });
   renderPatient(patient);
-  loadRecent().catch(() => null);
+  if (updateRecent) loadRecent().catch(() => null);
+  return patient;
+}
+
+async function openPhysicianRosterPatients() {
+  const items = state.physicianRoster || [];
+  if (!state.user || !items.length) return;
+  el.openRosterPatients.disabled = true;
+  el.physicianRosterForm.querySelector("button").disabled = true;
+  let opened = 0;
+  try {
+    for (const [index, item] of items.entries()) {
+      const query = item.chartNo || item.bedNo || item.feeNo;
+      if (!query) continue;
+      el.physicianRosterStatus.textContent = `正在開啟 ${index + 1}/${items.length}：${item.name || item.chartNo || query}`;
+      await loadPatient(query, { updateRecent: false, silent: true });
+      opened += 1;
+    }
+    el.physicianRosterStatus.textContent = `${state.physicianRosterDoctor?.id || ""}${state.physicianRosterDoctor?.name ? ` ${state.physicianRosterDoctor.name}` : ""}：已開啟 ${opened} 位病人`;
+    await loadRecent().catch(() => null);
+  } catch (error) {
+    el.physicianRosterStatus.textContent = `開啟病人清單中斷：${error.message || "查詢失敗"}`;
+  } finally {
+    el.openRosterPatients.disabled = !state.user || !state.physicianRoster.length;
+    el.physicianRosterForm.querySelector("button").disabled = !state.user;
+  }
 }
 
 async function refreshPatient() {
@@ -1268,6 +1332,7 @@ el.physicianRosterForm.addEventListener("submit", (event) => {
 });
 
 el.reloadRecent.addEventListener("click", loadRecent);
+el.openRosterPatients.addEventListener("click", openPhysicianRosterPatients);
 el.refreshPatient.addEventListener("click", refreshPatient);
 document.addEventListener("click", async (event) => {
   if (event.target?.id !== "copyStructuredSummary" || !state.currentPatient) return;

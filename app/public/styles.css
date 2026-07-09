@@ -229,6 +229,19 @@ button:disabled {
   padding-right: 2px;
 }
 
+.roster-actions {
+  margin: 8px 0;
+}
+
+.roster-actions button {
+  width: 100%;
+  min-height: 38px;
+  background: #ecfdf5;
+  border-color: #86efac;
+  color: #166534;
+  font-weight: 700;
+}
+
 .patient-item {
   width: 100%;
   text-align: left;
@@ -389,6 +402,33 @@ button:disabled {
 
 .summary-io-section {
   margin: 0 0 14px;
+}
+
+.admission-stay-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  border: 1px solid #bbf7d0;
+  border-radius: 6px;
+  background: #ecfdf5;
+  color: #14532d;
+  padding: 10px 12px;
+  margin: 0 0 14px;
+}
+
+.admission-stay-banner strong {
+  font-size: 14px;
+}
+
+.admission-stay-banner span {
+  font-size: 18px;
+  font-weight: 800;
+}
+
+.admission-stay-banner small {
+  color: #166534;
+  font-weight: 700;
 }
 
 .summary-clinical-grid h3,

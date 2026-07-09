@@ -57,3 +57,37 @@ $env:API_PORT="8766"
 cd app
 npm run check
 ```
+
+## Discord Relay MVP
+
+This optional relay is for off-LAN lookup without VPN, reverse tunnel, or firewall traversal. The hospital host connects
+outbound to Discord, receives slash commands in one private channel, runs the same local Onepage/NIS parsers, and replies
+with compact ward-round text.
+
+1. Create a Discord application and bot, then invite the bot to the private server with `applications.commands`.
+2. Copy `.env.example` to `.env` and fill:
+   - `DISCORD_BOT_TOKEN`
+   - `DISCORD_CLIENT_ID`
+   - `DISCORD_GUILD_ID`
+   - `DISCORD_CHANNEL_ID`
+   - `DISCORD_ALLOWED_USER_IDS` as comma-separated Discord user IDs
+3. Login to Onepage once in the LAN workbench so `.local/sessions.json` has a fresh Onepage session.
+4. Check config:
+
+```powershell
+node relay/discord_agent.mjs --check-config
+```
+
+5. Start the relay:
+
+```powershell
+node relay/discord_agent.mjs
+```
+
+Commands:
+
+- `/ward doctor_id` returns the physician inpatient roster.
+- `/summary query` returns a compact patient ward-round summary.
+- `/relay-health` checks that the host has a usable Onepage session.
+
+Audit records go to `.local/relay_audit.ndjson`; patient lookups are logged with a hash, not raw chart numbers.

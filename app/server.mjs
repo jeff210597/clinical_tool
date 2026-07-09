@@ -61,6 +61,7 @@ function makePendingPatient(query = "") {
     bedNo: null,
     bedStatus: "pending_profile",
     bedSource: "Profile",
+    admissionPeriod: { startDate: "", endDate: "", status: "unknown" },
     source: "pending",
     updatedAt: now,
     warnings: [],
@@ -181,6 +182,7 @@ async function buildPatientFromQuery(query, user = null) {
     bedNo: admission.bedNo || basePatient.bedNo,
     bedSource: admission.bedNo ? "Onepage 目前住院清單" : basePatient.bedSource,
     feeno: admission.feeNo || null,
+    admissionPeriod: buildAdmissionPeriod(admission),
   };
 
   if (!admission.feeNo) {
@@ -332,6 +334,13 @@ function mergeSourceResultIntoPatient(patient, result) {
   return merged;
 }
 
+function buildAdmissionPeriod(admission = {}) {
+  const startDate = String(admission.admitDate || admission.startDate || "").trim();
+  const endDate = String(admission.dischargeDate || admission.endDate || "").trim();
+  const status = endDate ? "discharged" : (admission.status || "inpatient");
+  return { startDate, endDate, status };
+}
+
 function json(res, status, payload) {
   const body = JSON.stringify(payload, null, 2);
   res.writeHead(status, {
@@ -422,6 +431,7 @@ async function rememberRecentPatient(username, patient) {
     chartNo: patient.chartNo || "",
     displayName: patient.displayName || "",
     bedNo: patient.bedNo || "",
+    admissionPeriod: patient.admissionPeriod || null,
     location: patient.bedNo ? `床 ${patient.bedNo}` : patient.chartNo || patient.patientRef || "",
     updatedAt: patient.updatedAt || new Date().toISOString(),
     warningCount: patient.warnings?.length || 0,
@@ -979,6 +989,18 @@ const server = createServer(async (req, res) => {
 
 await loadSessionsFromDisk();
 
-server.listen(port, host, () => {
-  console.log(`Onepage Med Relay UI listening at http://${host}:${port}`);
-});
+const isMain = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
+
+if (isMain) {
+  server.listen(port, host, () => {
+    console.log(`Onepage Med Relay UI listening at http://${host}:${port}`);
+  });
+}
+
+export {
+  buildPatientFromQuery,
+  getCachedPatient,
+  makePendingPatient,
+  publicUser,
+  setCachedPatient,
+};

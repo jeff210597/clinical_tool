@@ -1,5 +1,8 @@
 const DEFAULT_ONEPAGE_BASE = "http://10.125.10.11:8040";
 const DEFAULT_APP_TOKEN = "app_tok_9c34eefcdfffc2e66c30f4cb6885e22d";
+const KNOWN_PHYSICIAN_NAMES = {
+  "09432": "張東晟",
+};
 
 export async function fetchPhysicianInpatients({
   doctorId,
@@ -12,7 +15,7 @@ export async function fetchPhysicianInpatients({
   if (!id) throw new Error("doctorId is required");
   if (!authToken) {
     return {
-      physician: { id, name: "" },
+      physician: { id, name: resolvePhysicianName(id, []) },
       patients: [],
       status: "missing_auth",
       message: "Onepage auth token is missing. Please login first.",
@@ -36,12 +39,26 @@ export async function fetchPhysicianInpatients({
   return {
     physician: {
       id,
-      name: firstValue(rows?.[0]?.doc_name, rows?.[0]?.doctor_name, rows?.[0]?.docName),
+      name: resolvePhysicianName(id, rows),
     },
     patients,
     status: "ok",
-    message: patients.length ? `已取得 ${patients.length} 位住院病人。` : "查無目前住院病人。",
+    message: patients.length ? `找到 ${patients.length} 位住院病人。` : "沒有找到住院病人。",
   };
+}
+
+function resolvePhysicianName(id, rows) {
+  const list = Array.isArray(rows) ? rows : rows ? [rows] : [];
+  return firstValue(
+    list[0]?.doc_name,
+    list[0]?.doctor_name,
+    list[0]?.docName,
+    list[0]?.vs_name,
+    list[0]?.attending_name,
+    list[0]?.["醫師姓名"],
+    list[0]?.["姓名"],
+    KNOWN_PHYSICIAN_NAMES[String(id).trim()]
+  );
 }
 
 function normalizeRosterPatient(row = {}, doctorId = "") {
@@ -52,6 +69,8 @@ function normalizeRosterPatient(row = {}, doctorId = "") {
     bedNo: firstValue(row.bed_no, row.bed, row.bedNo),
     feeNo: firstValue(row.fee_no, row.feeno, row.feeNo, row.fee_no_ori),
     dept: firstValue(row.dept_name, row.dept, row.div_name),
+    admitDate: firstValue(row.start, row.start_date, row.startDate, row.admit_date, row.admitDate, row.admission_date, row.in_date, row.ipd_date),
+    dischargeDate: firstValue(row.end, row.end_date, row.endDate, row.discharge_date, row.dischargeDate, row.dc_date, row.out_date),
     doctorId: docId,
     combineCare: !!doctorId && !!docId && String(docId).trim() !== String(doctorId).trim(),
   };
@@ -62,10 +81,10 @@ async function postOnepageApi({ onepageBase, path, params, appToken, authToken, 
   const response = await fetchImpl(`${base}/api/${path}`, {
     method: "POST",
     headers: {
-      "accept": "application/json, text/plain, */*",
+      accept: "application/json, text/plain, */*",
       "content-type": "application/json",
-      "origin": base,
-      "referer": `${base}/mypage`,
+      origin: base,
+      referer: `${base}/mypage`,
       "x-app-token": appToken,
       "x-wfauth": authToken,
     },

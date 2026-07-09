@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>影子查房工作站</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="sidebar">
+        <header>
+          <p class="eyebrow">Shadow Workstation</p>
+          <h1>影子查房工作站</h1>
+          <p id="status">等待登入</p>
+        </header>
+
+        <section class="card">
+          <label for="pin">存取 PIN</label>
+          <div class="row">
+            <input id="pin" type="password" autocomplete="current-password" placeholder="輸入 PIN" />
+            <button id="savePin" type="button">儲存</button>
+          </div>
+        </section>
+
+        <section class="card">
+          <label for="doctorId">醫師住院清單</label>
+          <div class="row">
+            <input id="doctorId" inputmode="numeric" placeholder="例如 09432" />
+            <button id="loadWard" type="button">查詢</button>
+          </div>
+        </section>
+
+        <section class="card">
+          <label for="patientQuery">病人摘要</label>
+          <div class="row">
+            <input id="patientQuery" placeholder="病歷號 / 床號" />
+            <button id="loadSummary" type="button">查詢</button>
+          </div>
+        </section>
+
+        <section class="card roster-card">
+          <div class="section-title">
+            <span>病人清單</span>
+            <button id="clearPatients" class="small" type="button">清空</button>
+          </div>
+          <div id="roster" class="patient-list"><div class="empty">尚未查詢。</div></div>
+        </section>
+      </aside>
+
+      <main class="content">
+        <nav id="patientTabs" class="patient-tabs"></nav>
+        <section id="resultPanel" class="panel">
+          <div class="empty">先輸入 PIN，再查醫師清單或病人摘要。</div>
+        </section>
+      </main>
+    </div>
+    <script src="/app.js"></script>
+  </body>
+</html>

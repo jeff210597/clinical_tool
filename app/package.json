@@ -5,6 +5,8 @@
   "type": "module",
   "scripts": {
     "start": "node server.mjs",
-    "check": "node --check server.mjs && node --check public/app.js && node --check parsers/onepage_browser_auth.mjs && node --check parsers/onepage_current_admission.mjs && node smoke_check.cjs"
+    "start:relay": "node relay/discord_agent.mjs",
+    "check:relay": "node relay/discord_agent.mjs --check-config",
+    "check": "node --check server.mjs && node --check public/app.js && node --check parsers/onepage_browser_auth.mjs && node --check parsers/onepage_current_admission.mjs && node --check parsers/onepage_physician_roster.mjs && node --check services/relay_summary.mjs && node --check relay/discord_agent.mjs && node smoke_check.cjs"
   }
 }
