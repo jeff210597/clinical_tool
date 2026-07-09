@@ -74,11 +74,18 @@ async function processRequest(request) {
     });
     console.log(`cloudflare shadow request ${request.id} done (${request.type})`);
   } catch (error) {
+    const errorText = redact(error.message || error);
+    const encryptedError = await maybeEncryptResult(request, { ok: false, error: errorText }).catch(() => null);
     await shadowFetch("/api/cf-shadow/agent/respond", {
       method: "POST",
-      body: JSON.stringify({ id: request.id, status: "error", error: redact(error.message || error) }),
+      body: JSON.stringify({
+        id: request.id,
+        status: "error",
+        error: encryptedError ? "encrypted_error" : errorText,
+        result: encryptedError,
+      }),
     }).catch((postError) => console.error(`failed posting error result: ${redact(postError.message || postError)}`));
-    console.error(`cloudflare shadow request ${request.id} failed: ${redact(error.message || error)}`);
+    console.error(`cloudflare shadow request ${request.id} failed: ${errorText}`);
   }
 }
 
