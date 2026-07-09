@@ -509,12 +509,13 @@ function surgerySummaryTitle(row) {
 
 function surgerySummaryBody(row) {
   const operativeProcedure = surgeryOperativeProcedure(row);
+  const note = surgeryExtraNote(row, operativeProcedure);
   return [
     row.diagPre ? `術前診斷：${row.diagPre}` : "",
     row.diagPost ? `術後診斷：${row.diagPost}` : "",
-    operativeProcedure ? `Operative Procedure：\n${operativeProcedure}` : "",
     row.finding ? `Operative Findings：\n${row.finding}` : "",
-    row.note && row.note !== row.finding && row.note !== operativeProcedure ? row.note : "",
+    operativeProcedure ? `Operative Procedure：\n${operativeProcedure}` : "",
+    note,
   ].filter(Boolean).join("\n") || "有手術標題，尚無詳細報告";
 }
 
@@ -812,6 +813,7 @@ function firstDisplayLine(value) {
 
 function surgeryRecord(row, index) {
   const operativeProcedure = surgeryOperativeProcedure(row);
+  const note = surgeryExtraNote(row, operativeProcedure);
   const fields = [
     ["房號", row.room],
     ["流水序號", row.key],
@@ -847,15 +849,24 @@ function surgeryRecord(row, index) {
       <dl class="detail-grid">
         ${fields.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join("")}
       </dl>
-      ${operativeProcedure ? `<section class="record-block"><h4>Operative Procedure</h4><pre>${escapeHtml(operativeProcedure)}</pre></section>` : ""}
-      ${row.finding ? `<section class="record-block"><h4>Operative Findings</h4><pre>${escapeHtml(row.finding)}</pre></section>` : ""}
-      ${row.note && row.note !== row.finding && row.note !== operativeProcedure ? `<section class="record-block"><h4>備註 / 紀錄</h4><pre>${escapeHtml(row.note)}</pre></section>` : ""}
+      ${row.finding ? `<section class="record-block surgery-report-block"><h4>Operative Findings</h4><pre>${escapeHtml(row.finding)}</pre></section>` : ""}
+      ${operativeProcedure ? `<section class="record-block surgery-report-block"><h4>Operative Procedure</h4><pre>${escapeHtml(operativeProcedure)}</pre></section>` : ""}
+      ${note ? `<section class="record-block"><h4>備註 / 紀錄</h4><pre>${escapeHtml(note)}</pre></section>` : ""}
     </article>
   `;
 }
 
 function surgeryOperativeProcedure(row = {}) {
-  return row.operativeProcedure || row.operation || "";
+  return row.operativeProcedure || "";
+}
+
+function surgeryExtraNote(row = {}, operativeProcedure = "") {
+  const note = String(row.note || "").trim();
+  if (!note) return "";
+  const finding = String(row.finding || "").trim();
+  if (note === finding || note === operativeProcedure) return "";
+  if (finding && operativeProcedure && note.includes(finding) && note.includes(operativeProcedure)) return "";
+  return note;
 }
 
 function renderNursing(nursing) {

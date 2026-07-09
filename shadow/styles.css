@@ -1032,6 +1032,17 @@ button:disabled {
   margin-top: 14px;
 }
 
+.surgery-report-block {
+  border: 1px solid #dbe5ef;
+  border-radius: 8px;
+  background: #fbfdff;
+  padding: 12px 14px;
+}
+
+.surgery-report-block + .surgery-report-block {
+  margin-top: 12px;
+}
+
 .record-block h4 {
   margin: 0 0 8px;
   font-size: 14px;

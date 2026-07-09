@@ -353,59 +353,105 @@ async function enrichSurgeryRows({ rows, feeno, chartNo, onepageBase, appToken, 
 }
 
 function normalizeSurgeries(rows) {
-  return sortByTimeDesc(rows.map((row) => ({
-    date: formatDate(firstValue(row.date, row.op_date, row.operation_date)),
-    procedure: firstValue(row.surgery, row.procedure, row.operation, row.op_name, row.name, row.title),
-    operation: firstValue(row.operation),
-    operativeProcedure: cleanReport(firstValue(
+  return sortByTimeDesc(rows.map((row) => {
+    const reportText = cleanReport(firstValue(
+      row.full_report,
+      row.report,
+      row.record,
+      row.op_record,
+      row.operation_record,
+      row.record_detail,
+      row.detail,
+      row.details,
+      row.note,
+      row.summary,
+      row.content,
+      row.text
+    ));
+    const reportSections = extractSurgeryReportSections(reportText);
+    const operativeProcedure = cleanReport(firstValue(
+      row.operativeProcedure,
       row.operative_procedure,
+      row.operative_procedure_text,
       row.op_procedure,
       row.operation_procedure,
       row.oper_proc,
       row.op_proc,
-      row.proc,
-      row.proc_desc,
-      row.procedure_note,
+      row.surgical_procedure,
+      row.procedure_detail,
       row.procedure_text,
-      row.operation_note,
-      row.op_note,
-      row.op_record,
-      row.op_description,
-      row.operation_record,
-      row.operation_description,
-      row.record_detail,
-      row.detail,
-      row.details,
-      row.op_method,
-      row.method,
-      row.methods,
-      row.術式,
       row.手術步驟,
-      row.手術過程,
-      row.手術方法
-    )),
-    room: firstValue(row.room),
-    dept: firstValue(row.dept),
-    key: firstValue(row.key),
-    no: firstValue(row.no),
-    start: formatDateTime(firstValue(row.start)),
-    end: formatDateTime(firstValue(row.end)),
-    finishDate: formatDateTime(firstValue(row.finish_date)),
-    diagPre: firstValue(row.diag_pre),
-    diagPost: firstValue(row.diag_post),
-    indication: firstValue(row.indication),
-    complication: firstValue(row.complication),
-    bloodLoss: firstValue(row.blood_loss),
-    finding: firstValue(row.finding),
-    antibioticsUsed: row.is_antibiotics_used === true ? "是" : row.is_antibiotics_used === false ? "否" : "",
-    surgeon: firstValue(row.surgeon, row.operator, row.doctor) || formatPeople(row.person?.doctor),
-    resident: formatPeople(row.person?.resident),
-    scrubNurse: formatPeople(row.person?.["scrubbing nurse"]),
-    circulatingNurse: formatPeople(row.person?.["circulating nurse"]),
-    anesthesia: firstValue(row.anesthesia),
-    codes: Array.isArray(row.code) ? row.code.join(", ") : firstValue(row.code),
-    note: firstValue(row.note, row.summary, row.record, row.report, row.finding),
-  })).filter((row) => row.date || row.procedure || row.note), (row) => row.date);
+      row.手術過程
+    )) || reportSections.operativeProcedure;
+    const finding = cleanReport(firstValue(
+      row.operativeFindings,
+      row.operative_findings,
+      row.operative_finding,
+      row.op_findings,
+      row.op_finding,
+      row.findings,
+      row.finding,
+      row.手術所見,
+      row.手術發現
+    )) || reportSections.finding;
+
+    return {
+      date: formatDate(firstValue(row.date, row.op_date, row.operation_date)),
+      procedure: firstValue(row.surgery, row.procedure, row.operation, row.op_name, row.name, row.title),
+      operation: firstValue(row.operation),
+      operativeProcedure,
+      room: firstValue(row.room),
+      dept: firstValue(row.dept),
+      key: firstValue(row.key),
+      no: firstValue(row.no),
+      start: formatDateTime(firstValue(row.start)),
+      end: formatDateTime(firstValue(row.end)),
+      finishDate: formatDateTime(firstValue(row.finish_date)),
+      diagPre: firstValue(row.diag_pre),
+      diagPost: firstValue(row.diag_post),
+      indication: firstValue(row.indication),
+      complication: firstValue(row.complication),
+      bloodLoss: firstValue(row.blood_loss),
+      finding,
+      antibioticsUsed: row.is_antibiotics_used === true ? "是" : row.is_antibiotics_used === false ? "否" : "",
+      surgeon: firstValue(row.surgeon, row.operator, row.doctor) || formatPeople(row.person?.doctor),
+      resident: formatPeople(row.person?.resident),
+      scrubNurse: formatPeople(row.person?.["scrubbing nurse"]),
+      circulatingNurse: formatPeople(row.person?.["circulating nurse"]),
+      anesthesia: firstValue(row.anesthesia),
+      codes: Array.isArray(row.code) ? row.code.join(", ") : firstValue(row.code),
+      note: reportText || firstValue(row.note, row.summary, row.record, row.report, row.finding),
+    };
+  }).filter((row) => row.date || row.procedure || row.note), (row) => row.date);
+}
+
+function extractSurgeryReportSections(reportText) {
+  const text = cleanReport(reportText);
+  if (!text) return { finding: "", operativeProcedure: "" };
+  return {
+    finding: extractNamedSection(text, /Operative\s+Findings?\s*[:：]/i, [
+      /Operative\s+Procedure\s*[:：]/i,
+      /(?:^|\n).{0,30}(?:簽名|記錄完成時間|列印時間|Signature|Signed\s+by)/i,
+    ]),
+    operativeProcedure: extractNamedSection(text, /Operative\s+Procedure\s*[:：]/i, [
+      /(?:^|\n).{0,30}(?:簽名|記錄完成時間|列印時間|Signature|Signed\s+by)/i,
+    ]),
+  };
+}
+
+function extractNamedSection(text, headingPattern, endPatterns = []) {
+  const match = headingPattern.exec(text);
+  if (!match) return "";
+  const start = match.index + match[0].length;
+  const rest = text.slice(start);
+  const endIndexes = endPatterns
+    .map((pattern) => {
+      const endMatch = pattern.exec(rest);
+      return endMatch ? endMatch.index : -1;
+    })
+    .filter((index) => index >= 0);
+  const end = endIndexes.length ? Math.min(...endIndexes) : rest.length;
+  return cleanReport(rest.slice(0, end));
 }
 
 function normalizePathology(rows) {
