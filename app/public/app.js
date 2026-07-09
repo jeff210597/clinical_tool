@@ -1228,7 +1228,11 @@ async function refreshPhysicianRosterSummaries() {
       const query = item.chartNo || item.bedNo || item.feeNo;
       if (!query) continue;
       el.physicianRosterStatus.textContent = `正在更新 ${index + 1}/${items.length}：${item.name || item.chartNo || query}`;
-      await loadPatient(query, { updateRecent: false, silent: true });
+      const patient = await api("/api/patients/refresh", {
+        method: "POST",
+        body: JSON.stringify({ patientRef: query }),
+      });
+      renderPatient(patient);
       refreshed += 1;
     }
     const doctor = state.physicianRosterDoctor || {};
