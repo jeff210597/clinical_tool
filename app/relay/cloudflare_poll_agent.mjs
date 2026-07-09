@@ -1,5 +1,8 @@
 import { readFile } from "node:fs/promises";
+import { webcrypto } from "node:crypto";
 import { patientRoundingSummary, physicianRosterSummary } from "../services/relay_summary.mjs";
+
+const subtle = webcrypto.subtle;
 
 await loadEnvFile(new URL("../.env", import.meta.url));
 await loadEnvFile(new URL("../../.env", import.meta.url));
@@ -64,9 +67,10 @@ async function processRequest(request) {
     } else {
       throw new Error(`Unsupported request type: ${request.type}`);
     }
+    const responseResult = await maybeEncryptResult(request, result);
     await shadowFetch("/api/cf-shadow/agent/respond", {
       method: "POST",
-      body: JSON.stringify({ id: request.id, status: "done", result }),
+      body: JSON.stringify({ id: request.id, status: "done", result: responseResult }),
     });
     console.log(`cloudflare shadow request ${request.id} done (${request.type})`);
   } catch (error) {
@@ -76,6 +80,37 @@ async function processRequest(request) {
     }).catch((postError) => console.error(`failed posting error result: ${redact(postError.message || postError)}`));
     console.error(`cloudflare shadow request ${request.id} failed: ${redact(error.message || error)}`);
   }
+}
+
+async function maybeEncryptResult(request, result) {
+  const publicKeyJwk = request.payload?.crypto?.ecdhPublicKey;
+  if (!publicKeyJwk) return result;
+  const peerPublicKey = await subtle.importKey(
+    "jwk",
+    JSON.parse(base64UrlDecode(publicKeyJwk)),
+    { name: "ECDH", namedCurve: "P-256" },
+    false,
+    [],
+  );
+  const keyPair = await subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, ["deriveKey"]);
+  const aesKey = await subtle.deriveKey(
+    { name: "ECDH", public: peerPublicKey },
+    keyPair.privateKey,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["encrypt"],
+  );
+  const iv = webcrypto.getRandomValues(new Uint8Array(12));
+  const plaintext = new TextEncoder().encode(JSON.stringify(result));
+  const ciphertext = await subtle.encrypt({ name: "AES-GCM", iv }, aesKey, plaintext);
+  const agentPublicJwk = await subtle.exportKey("jwk", keyPair.publicKey);
+  return {
+    encrypted: true,
+    alg: "ECDH-P-256+A256GCM",
+    ecdhPublicKey: base64UrlEncode(JSON.stringify(agentPublicJwk)),
+    iv: base64UrlEncodeBytes(iv),
+    ciphertext: base64UrlEncodeBytes(new Uint8Array(ciphertext)),
+  };
 }
 
 async function shadowFetch(path, options = {}) {
@@ -106,6 +141,18 @@ function sleep(ms) {
 
 function redact(value) {
   return String(value || "").replace(/[A-Za-z0-9_\-.]{24,}/g, "[redacted]");
+}
+
+function base64UrlEncode(value) {
+  return Buffer.from(value, "utf8").toString("base64url");
+}
+
+function base64UrlEncodeBytes(value) {
+  return Buffer.from(value).toString("base64url");
+}
+
+function base64UrlDecode(value) {
+  return Buffer.from(value, "base64url").toString("utf8");
 }
 
 async function loadEnvFile(url) {

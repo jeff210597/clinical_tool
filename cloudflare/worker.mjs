@@ -115,18 +115,26 @@ async function postResult(request, env) {
 }
 
 function normalizePayload(type, payload) {
+  const crypto = normalizeCrypto(payload.crypto);
   if (type === "ward") {
     const doctorId = String(payload.doctorId || payload.doctor_id || "").trim();
-    return doctorId ? { doctorId } : null;
+    return doctorId ? { doctorId, ...(crypto ? { crypto } : {}) } : null;
   }
   if (type === "summary") {
     const query = String(payload.query || "").trim();
-    return query ? { query } : null;
+    return query ? { query, ...(crypto ? { crypto } : {}) } : null;
   }
   if (type === "echo") {
-    return { text: String(payload.text || "ping").slice(0, 200) };
+    return { text: String(payload.text || "ping").slice(0, 200), ...(crypto ? { crypto } : {}) };
   }
   return null;
+}
+
+function normalizeCrypto(cryptoPayload) {
+  const publicKey = String(cryptoPayload?.ecdhPublicKey || "").trim();
+  if (!publicKey || publicKey.length > 300) return null;
+  if (!/^[A-Za-z0-9_-]+$/.test(publicKey)) return null;
+  return { alg: "ECDH-P-256+A256GCM", ecdhPublicKey: publicKey };
 }
 
 function publicRow(row, options = {}) {
@@ -278,14 +286,17 @@ function pocHtml() {
         try {
           localStorage.setItem("cfShadowApiBase", apiBase.value.trim());
           localStorage.setItem("cfShadowPin", pin.value);
+          const cryptoState = await createCryptoState();
           const payload = type.value === "ward" ? { doctorId: query.value.trim() } : type.value === "summary" ? { query: query.value.trim() } : { text: query.value.trim() || "hello from cloudflare poc" };
+          payload.crypto = { ecdhPublicKey: cryptoState.publicKey };
           setStatus({ step: "creating", payload });
           const created = await post("/api/cf-shadow/request", { type: type.value, payload, pin: pin.value });
           setStatus({ step: "created", created });
           for (let i = 0; i < 40; i += 1) {
             await new Promise((resolve) => setTimeout(resolve, 1500));
             const result = await get("/api/cf-shadow/result/" + encodeURIComponent(created.id) + "?pin=" + encodeURIComponent(pin.value));
-            setStatus({ step: "poll", attempt: i + 1, result });
+            const decryptedResult = await decryptResultIfNeeded(result.result, cryptoState.privateKey);
+            setStatus({ step: "poll", attempt: i + 1, result, decryptedResult });
             if (["done", "error", "expired"].includes(result.status)) break;
           }
         } catch (error) {
@@ -305,6 +316,33 @@ function pocHtml() {
         const payload = await response.json().catch(() => ({}));
         if (!response.ok && response.status !== 410) throw new Error(payload.message || payload.error || "HTTP " + response.status);
         return payload;
+      }
+      async function createCryptoState() {
+        const keyPair = await crypto.subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, ["deriveKey"]);
+        const publicJwk = await crypto.subtle.exportKey("jwk", keyPair.publicKey);
+        return { privateKey: keyPair.privateKey, publicKey: base64UrlEncode(JSON.stringify(publicJwk)) };
+      }
+      async function decryptResultIfNeeded(result, privateKey) {
+        if (!result || result.encrypted !== true) return result;
+        const peerPublicKey = await crypto.subtle.importKey("jwk", JSON.parse(base64UrlDecode(result.ecdhPublicKey)), { name: "ECDH", namedCurve: "P-256" }, false, []);
+        const aesKey = await crypto.subtle.deriveKey({ name: "ECDH", public: peerPublicKey }, privateKey, { name: "AES-GCM", length: 256 }, false, ["decrypt"]);
+        const plaintext = await crypto.subtle.decrypt({ name: "AES-GCM", iv: base64UrlToBytes(result.iv) }, aesKey, base64UrlToBytes(result.ciphertext));
+        return JSON.parse(new TextDecoder().decode(plaintext));
+      }
+      function base64UrlEncode(value) {
+        const bytes = new TextEncoder().encode(value);
+        let binary = "";
+        for (const byte of bytes) binary += String.fromCharCode(byte);
+        return btoa(binary).replace(/\\+/g, "-").replace(/\\//g, "_").replace(/=+$/g, "");
+      }
+      function base64UrlDecode(value) {
+        const bytes = base64UrlToBytes(value);
+        return new TextDecoder().decode(bytes);
+      }
+      function base64UrlToBytes(value) {
+        const padded = value.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((value.length + 3) % 4);
+        const binary = atob(padded);
+        return Uint8Array.from(binary, (char) => char.charCodeAt(0));
       }
       function setStatus(value) { statusBox.textContent = JSON.stringify(value, null, 2); }
     </script>
