@@ -250,6 +250,9 @@ function pocHtml() {
       button { border: 0; border-radius: 8px; padding: 10px 14px; background: #047d76; color: #fff; font-weight: 700; }
       button:disabled { opacity: .55; }
       pre { white-space: pre-wrap; word-break: break-word; background: #0f172a; color: #e2e8f0; border-radius: 8px; padding: 14px; }
+      .result-text { white-space: pre-wrap; word-break: break-word; border: 1px solid #dbe5ef; border-radius: 8px; background: #fbfdff; padding: 14px; line-height: 1.55; }
+      details { margin-top: 12px; }
+      summary { cursor: pointer; color: #047d76; font-weight: 700; }
       .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
       .note { color: #64748b; font-size: 13px; line-height: 1.5; }
       @media (max-width: 720px) { .row { grid-template-columns: 1fr; } }
@@ -274,11 +277,18 @@ function pocHtml() {
         <input id="query" placeholder="echo 文字 / 病歷號 / 醫師員編" />
         <p><button id="send">送出測試 request</button></p>
       </section>
-      <section class="card"><h2>狀態</h2><pre id="status">尚未送出。</pre></section>
+      <section class="card">
+        <h2>狀態</h2>
+        <div id="resultText" class="result-text">尚未送出。</div>
+        <details>
+          <summary>原始除錯 JSON</summary>
+          <pre id="status">尚未送出。</pre>
+        </details>
+      </section>
     </main>
     <script>
       const $ = (id) => document.querySelector(id);
-      const apiBase = $("#apiBase"), pin = $("#pin"), type = $("#type"), query = $("#query"), statusBox = $("#status"), send = $("#send");
+      const apiBase = $("#apiBase"), pin = $("#pin"), type = $("#type"), query = $("#query"), statusBox = $("#status"), resultText = $("#resultText"), send = $("#send");
       apiBase.value = localStorage.getItem("cfShadowApiBase") || location.origin;
       pin.value = localStorage.getItem("cfShadowPin") || "";
       send.addEventListener("click", async () => {
@@ -289,18 +299,18 @@ function pocHtml() {
           const cryptoState = await createCryptoState();
           const payload = type.value === "ward" ? { doctorId: query.value.trim() } : type.value === "summary" ? { query: query.value.trim() } : { text: query.value.trim() || "hello from cloudflare poc" };
           payload.crypto = { ecdhPublicKey: cryptoState.publicKey };
-          setStatus({ step: "creating", payload });
+          setStatus({ step: "creating", payload }, "已送出請求，等待院內主機回覆...");
           const created = await post("/api/cf-shadow/request", { type: type.value, payload, pin: pin.value });
-          setStatus({ step: "created", created });
+          setStatus({ step: "created", created }, "請求已建立，等待院內主機領取...");
           for (let i = 0; i < 40; i += 1) {
             await new Promise((resolve) => setTimeout(resolve, 1500));
             const result = await get("/api/cf-shadow/result/" + encodeURIComponent(created.id) + "?pin=" + encodeURIComponent(pin.value));
             const decryptedResult = await decryptResultIfNeeded(result.result, cryptoState.privateKey);
-            setStatus({ step: "poll", attempt: i + 1, result, decryptedResult });
+            setStatus({ step: "poll", attempt: i + 1, result: compactDebugResult(result), decryptedResult }, formatReadableResult(result, decryptedResult));
             if (["done", "error", "expired"].includes(result.status)) break;
           }
         } catch (error) {
-          setStatus({ error: error.message || String(error) });
+          setStatus({ error: error.message || String(error) }, "錯誤：" + (error.message || String(error)));
         } finally {
           send.disabled = false;
         }
@@ -344,7 +354,35 @@ function pocHtml() {
         const binary = atob(padded);
         return Uint8Array.from(binary, (char) => char.charCodeAt(0));
       }
-      function setStatus(value) { statusBox.textContent = JSON.stringify(value, null, 2); }
+      function compactDebugResult(result) {
+        if (!result?.result?.encrypted) return result;
+        return {
+          ...result,
+          result: {
+            encrypted: true,
+            alg: result.result.alg,
+            ecdhPublicKeyLength: result.result.ecdhPublicKey?.length || 0,
+            ivLength: result.result.iv?.length || 0,
+            ciphertextLength: result.result.ciphertext?.length || 0,
+          },
+        };
+      }
+      function formatReadableResult(result, decryptedResult) {
+        if (!result) return "等待回覆...";
+        if (result.status === "pending" || result.status === "claimed") return "等待院內主機回覆...（" + result.status + "）";
+        if (result.status === "expired") return "請求已過期，請重新送出。";
+        if (decryptedResult?.error) return "錯誤：" + decryptedResult.error;
+        if (result.status === "error") return "錯誤：" + (result.error || "查詢失敗");
+        if (!decryptedResult) return "已完成，但沒有可顯示內容。";
+        if (typeof decryptedResult === "string") return decryptedResult;
+        if (decryptedResult.text) return decryptedResult.text;
+        if (decryptedResult.echo) return "Echo 回覆：" + decryptedResult.echo;
+        return JSON.stringify(decryptedResult, null, 2);
+      }
+      function setStatus(value, readable) {
+        statusBox.textContent = JSON.stringify(value, null, 2);
+        resultText.textContent = readable || JSON.stringify(value, null, 2);
+      }
     </script>
   </body>
 </html>`;
