@@ -1,6 +1,6 @@
-# Cloudflare Shadow Workstation POC
+# Cloudflare Shadow Workstation
 
-This POC uses Cloudflare only as a public test page and request/result mailbox.
+This workflow uses Cloudflare Workers as the public shadow workstation link and request/result mailbox.
 
 It does **not** use Cloudflare Tunnel, WARP, Zero Trust remote access, reverse VPN, port forwarding, or any inbound connection to the hospital workstation.
 
@@ -26,16 +26,19 @@ The relay agent only makes normal outbound HTTPS requests to the configured Work
 
 ## Files
 
-- `cloudflare/worker.mjs` - Worker API mailbox.
+- `shadow/index.html`, `shadow/app.js`, `shadow/styles.css` - full shadow workstation UI served by Cloudflare Workers static assets.
+- `cloudflare/worker.mjs` - Worker API mailbox and static-asset fallback.
 - `cloudflare/schema.sql` - D1 schema.
 - `cloudflare/pages/index.html` - minimal standalone test page, kept as a reference.
 - `cloudflare/wrangler.toml.example` - deployment template.
 - `app/relay/cloudflare_poll_agent.mjs` - hospital-side outbound polling agent.
-- `Start_Cloudflare_Relay_Agent.cmd` - echo-only starter.
+- `Start_Cloudflare_Relay_Agent.cmd` - hospital-side relay starter.
 
 ## API
 
 - `GET /health`
+- `POST /api/shadow/request`
+- `GET /api/shadow/result/:id`
 - `POST /api/cf-shadow/request`
 - `GET /api/cf-shadow/result/:id`
 - `GET /api/cf-shadow/agent/poll`
@@ -72,7 +75,7 @@ Deploy Worker:
 npx wrangler deploy --config cloudflare/wrangler.toml
 ```
 
-Open the Worker URL directly to use the built-in test page. Cloudflare Pages is not required for the POC.
+Open the Worker URL directly to use the shadow workstation. Cloudflare Pages and Netlify are not required for this deployment path.
 
 ## Local Agent Configuration
 
@@ -82,10 +85,9 @@ Add to `app/.env`:
 CF_SHADOW_API_BASE=https://<your-worker>.<account>.workers.dev
 CF_SHADOW_RELAY_KEY=<same as Worker secret>
 CF_SHADOW_POLL_INTERVAL_MS=3000
-CF_SHADOW_ECHO_ONLY=1
 ```
 
-Run first in echo-only mode:
+Run the hospital-side outbound relay:
 
 ```powershell
 Start_Cloudflare_Relay_Agent.cmd
@@ -96,26 +98,26 @@ Or:
 ```powershell
 $node="$env:USERPROFILE\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe"
 & $node app\relay\cloudflare_poll_agent.mjs --check-config
-& $node app\relay\cloudflare_poll_agent.mjs --echo-only
+& $node app\relay\cloudflare_poll_agent.mjs
 ```
 
-Only after connectivity is proven should `CF_SHADOW_ECHO_ONLY` be removed.
+For connection-only testing, run `cloudflare_poll_agent.mjs --echo-only`. Remove echo-only mode for real workstation queries.
 
 ## Safety Checklist Before Clinical Use
 
 - Verify `GET /health` works from the hospital workstation.
-- Verify `--echo-only` request/response works from the Worker root page in the phone browser.
+- Verify an echo request/response works before clinical use.
 - Confirm no process is listening for public inbound traffic.
 - Confirm no Cloudflare Tunnel/WARP/Zero Trust tunnel is installed or running for this workflow.
 - Keep TTL short, currently 10 minutes by default.
-- Do not deploy real clinical data to Cloudflare until application-layer encryption is added and tested.
+- Clinical responses are encrypted by the hospital-side agent when the browser provides an ECDH public key. The Worker stores only the encrypted result envelope for normal shadow workstation queries.
 
 ## Current Status
 
-This is a connectivity POC. It is intended to answer:
+Cloudflare Workers now hosts the full shadow workstation UI and the relay mailbox at one URL:
 
-1. Can the hospital workstation make outbound HTTPS requests to Cloudflare Worker?
-2. Can a phone browser submit a request and read the response?
-3. Is the latency acceptable compared with Discord relay?
+```text
+https://clinical-tool-shadow-poc.jeff0923583891.workers.dev
+```
 
-It is not yet a production clinical-data transport.
+Netlify remains optional as a fallback, but is no longer required for the Cloudflare shadow path.

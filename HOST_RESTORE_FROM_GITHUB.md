@@ -31,6 +31,10 @@ SHADOW_API_BASE=https://clinical-tool-shadow.netlify.app
 SHADOW_RELAY_KEY=
 SHADOW_PIN=
 SHADOW_POLL_INTERVAL_MS=3000
+CF_SHADOW_API_BASE=https://clinical-tool-shadow-poc.jeff0923583891.workers.dev
+CF_SHADOW_RELAY_KEY=
+CF_SHADOW_PIN=
+CF_SHADOW_POLL_INTERVAL_MS=3000
 ```
 
 Values that must be provided manually:
@@ -44,6 +48,8 @@ Values that must be provided manually:
 - Shadow PIN
 - Netlify site URL, if it changes
 - Netlify personal access token, only when redeploying from the new host
+- Cloudflare API token and account id, only when redeploying the Cloudflare Worker from the new host
+- Cloudflare Worker URL, relay key, and PIN
 - GitHub token, only when pushing updates from the new host
 
 Do not commit these files:
@@ -52,6 +58,8 @@ Do not commit these files:
 - `app/.local/`
 - `PAT token.txt`
 - `netlify token.txt`
+- `cloudflare token.txt`
+- `cloudflare/wrangler.toml`
 - `netlify/functions/_shared/shadow-local-secrets.json`
 
 ## Start LAN Workstation
@@ -88,13 +96,27 @@ Test in Discord:
 .\Start_Shadow_Relay_Agent.cmd
 ```
 
-Shadow workstation:
+Netlify shadow workstation:
 
 ```text
 https://clinical-tool-shadow.netlify.app
 ```
 
 Enter `SHADOW_PIN` in the web page, then query a physician id or patient chart number.
+
+## Start Cloudflare Shadow Relay
+
+```powershell
+.\Start_Cloudflare_Relay_Agent.cmd
+```
+
+Cloudflare shadow workstation:
+
+```text
+https://clinical-tool-shadow-poc.jeff0923583891.workers.dev
+```
+
+Enter `CF_SHADOW_PIN` in the web page, then query a physician id or patient chart number. This path does not require Netlify.
 
 ## Redeploy Netlify Shadow Site
 

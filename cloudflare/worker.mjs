@@ -21,8 +21,12 @@ async function handleRequest(request, env) {
 
   if (url.pathname === "/api/cf-shadow/request" && request.method === "POST") return createRequest(request, env);
   if (url.pathname.startsWith("/api/cf-shadow/result/") && request.method === "GET") return readResult(request, env);
+  if (url.pathname === "/api/shadow/request" && request.method === "POST") return createRequest(request, env);
+  if (url.pathname.startsWith("/api/shadow/result/") && request.method === "GET") return readResult(request, env);
   if (url.pathname === "/api/cf-shadow/agent/poll" && request.method === "GET") return pollRequests(request, env);
   if (url.pathname === "/api/cf-shadow/agent/respond" && request.method === "POST") return postResult(request, env);
+
+  if (env.ASSETS && request.method === "GET") return env.ASSETS.fetch(request);
 
   return json({ error: "not_found" }, 404);
 }

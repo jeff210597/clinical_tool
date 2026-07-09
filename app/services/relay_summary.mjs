@@ -217,14 +217,27 @@ function valueOf(row, ...keys) {
 
 function firstText(...values) {
   for (const value of values) {
-    const text = String(value ?? "").trim();
+    const text = displayText(value);
     if (text) return text;
   }
   return "";
 }
 
 function compact(value, maxLength) {
-  const text = String(value || "").replace(/\s+/g, " ").trim();
+  const text = displayText(value).replace(/\s+/g, " ").trim();
   if (text.length <= maxLength) return text;
   return `${text.slice(0, maxLength - 1)}…`;
+}
+
+function displayText(value) {
+  if (value == null) return "";
+  if (typeof value === "string" || typeof value === "number") return String(value).trim();
+  if (Array.isArray(value)) return value.map(displayText).filter(Boolean).join("；");
+  if (typeof value === "object") {
+    for (const key of ["label", "text", "diagnosis", "admissionReason", "title", "name", "value"]) {
+      const text = displayText(value[key]);
+      if (text) return text;
+    }
+  }
+  return "";
 }

@@ -2,6 +2,10 @@ name = "clinical-tool-shadow-poc"
 main = "worker.mjs"
 compatibility_date = "2026-07-09"
 
+[assets]
+directory = "../shadow"
+binding = "ASSETS"
+
 [[d1_databases]]
 binding = "DB"
 database_name = "clinical-tool-shadow-poc"

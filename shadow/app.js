@@ -49,6 +49,19 @@ function escapeHtml(value) {
     .replace(/'/g, "&#39;");
 }
 
+function displayText(value) {
+  if (value == null) return "";
+  if (typeof value === "string" || typeof value === "number") return String(value).trim();
+  if (Array.isArray(value)) return value.map(displayText).filter(Boolean).join("；");
+  if (typeof value === "object") {
+    for (const key of ["label", "text", "diagnosis", "admissionReason", "title", "name", "value"]) {
+      const text = displayText(value[key]);
+      if (text) return text;
+    }
+  }
+  return "";
+}
+
 function formatTime(iso) {
   if (!iso) return "-";
   return new Intl.DateTimeFormat("zh-TW", { hour: "2-digit", minute: "2-digit" }).format(new Date(iso));
@@ -135,25 +148,72 @@ function parseJsonBody(body) {
 
 async function createShadowRequest(type, payload) {
   if (!state.pin) throw new Error("請先輸入影子工作站 PIN。");
+  const cryptoState = await createCryptoState();
+  payload.crypto = { ecdhPublicKey: cryptoState.publicKey };
   const request = await shadowFetch("/api/shadow/request", {
     method: "POST",
     body: JSON.stringify({ type, payload }),
   });
-  return pollShadowResult(request.id);
+  return pollShadowResult(request.id, cryptoState.privateKey);
 }
 
-async function pollShadowResult(id) {
+async function pollShadowResult(id, privateKey = null) {
   el.serviceStatus.textContent = "等待院內主機 relay 回傳...";
   for (let attempt = 0; attempt < 120; attempt += 1) {
     const result = await shadowFetch(`/api/shadow/result/${encodeURIComponent(id)}`);
     if (result.status === "done") {
       el.serviceStatus.textContent = "影子工作站已連線";
-      return result.result || {};
+      return decryptResultIfNeeded(result.result, privateKey);
     }
-    if (result.status === "error") throw new Error(result.error || "院內 relay 回傳錯誤。");
+    if (result.status === "error") {
+      const decryptedError = await decryptResultIfNeeded(result.result, privateKey).catch(() => null);
+      throw new Error(decryptedError?.error || result.error || "院內 relay 回傳錯誤。");
+    }
     await sleep(2000);
   }
   throw new Error("等待院內 relay 逾時，請確認 Shadow Relay Agent 仍在院內主機執行。");
+}
+
+async function createCryptoState() {
+  if (!crypto?.subtle) return { privateKey: null, publicKey: "" };
+  const keyPair = await crypto.subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, ["deriveKey"]);
+  const publicJwk = await crypto.subtle.exportKey("jwk", keyPair.publicKey);
+  return { privateKey: keyPair.privateKey, publicKey: base64UrlEncode(JSON.stringify(publicJwk)) };
+}
+
+async function decryptResultIfNeeded(result, privateKey) {
+  if (!result?.encrypted) return result || {};
+  if (!privateKey) throw new Error("此瀏覽器不支援影子工作站端對端解密。");
+  const peerPublicKey = await crypto.subtle.importKey(
+    "jwk",
+    JSON.parse(base64UrlDecode(result.ecdhPublicKey)),
+    { name: "ECDH", namedCurve: "P-256" },
+    false,
+    [],
+  );
+  const aesKey = await crypto.subtle.deriveKey(
+    { name: "ECDH", public: peerPublicKey },
+    privateKey,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["decrypt"],
+  );
+  const plaintext = await crypto.subtle.decrypt({ name: "AES-GCM", iv: base64UrlToBytes(result.iv) }, aesKey, base64UrlToBytes(result.ciphertext));
+  return JSON.parse(new TextDecoder().decode(plaintext));
+}
+
+function base64UrlEncode(value) {
+  return btoa(value).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function base64UrlDecode(value) {
+  const normalized = String(value || "").replace(/-/g, "+").replace(/_/g, "/");
+  return atob(normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "="));
+}
+
+function base64UrlToBytes(value) {
+  const binary = base64UrlDecode(value);
+  return Uint8Array.from(binary, (char) => char.charCodeAt(0));
 }
 
 async function shadowFetch(path, options = {}) {
@@ -685,12 +745,12 @@ function admissionStayBanner(patient) {
 
 function diagnosisLine(patient) {
   const first = patient.clinicalContext?.aiIntegrated?.explicitDiagnoses?.[0];
-  return first?.label || first?.text || patient.clinicalContext?.admissionReason?.text || "尚未擷取";
+  return displayText(first) || displayText(patient.clinicalContext?.admissionReason?.text) || displayText(patient.clinicalContext?.admissionReason) || "尚未擷取";
 }
 
 function historyLine(patient) {
   const rows = patient.clinicalContext?.aiIntegrated?.importantHistory || patient.clinicalContext?.pastHistory || [];
-  return rows.length ? rows.map((row) => row.label || row.text).join("；") : "尚未擷取";
+  return rows.length ? rows.map(displayText).filter(Boolean).join("；") || "尚未擷取" : "尚未擷取";
 }
 
 function summarySurgery(rows) {
