@@ -138,7 +138,8 @@ function normalizeCrypto(cryptoPayload) {
   const publicKey = String(cryptoPayload?.ecdhPublicKey || "").trim();
   if (!publicKey || publicKey.length > 300) return null;
   if (!/^[A-Za-z0-9_-]+$/.test(publicKey)) return null;
-  return { alg: "ECDH-P-256+A256GCM", ecdhPublicKey: publicKey };
+  const compression = cryptoPayload?.compression === "gzip" ? "gzip" : "";
+  return { alg: "ECDH-P-256+A256GCM", ecdhPublicKey: publicKey, ...(compression ? { compression } : {}) };
 }
 
 function publicRow(row, options = {}) {
@@ -341,7 +342,13 @@ function pocHtml() {
         const peerPublicKey = await crypto.subtle.importKey("jwk", JSON.parse(base64UrlDecode(result.ecdhPublicKey)), { name: "ECDH", namedCurve: "P-256" }, false, []);
         const aesKey = await crypto.subtle.deriveKey({ name: "ECDH", public: peerPublicKey }, privateKey, { name: "AES-GCM", length: 256 }, false, ["decrypt"]);
         const plaintext = await crypto.subtle.decrypt({ name: "AES-GCM", iv: base64UrlToBytes(result.iv) }, aesKey, base64UrlToBytes(result.ciphertext));
-        return JSON.parse(new TextDecoder().decode(plaintext));
+        const bytes = result.compression === "gzip" ? await decompressGzipBytes(new Uint8Array(plaintext)) : new Uint8Array(plaintext);
+        return JSON.parse(new TextDecoder().decode(bytes));
+      }
+      async function decompressGzipBytes(bytes) {
+        if (!("DecompressionStream" in window)) throw new Error("Browser does not support gzip decompression.");
+        const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"));
+        return new Uint8Array(await new Response(stream).arrayBuffer());
       }
       function base64UrlEncode(value) {
         const bytes = new TextEncoder().encode(value);
@@ -365,6 +372,7 @@ function pocHtml() {
           result: {
             encrypted: true,
             alg: result.result.alg,
+            compression: result.result.compression || "",
             ecdhPublicKeyLength: result.result.ecdhPublicKey?.length || 0,
             ivLength: result.result.iv?.length || 0,
             ciphertextLength: result.result.ciphertext?.length || 0,

@@ -1,8 +1,10 @@
 import { readFile } from "node:fs/promises";
 import { webcrypto } from "node:crypto";
+import { gzipSync } from "node:zlib";
 import { patientRoundingSummary, physicianRosterSummary } from "../services/relay_summary.mjs";
 
 const subtle = webcrypto.subtle;
+const MAX_RESPONSE_BYTES = 480 * 1024;
 
 await loadEnvFile(new URL("../.env", import.meta.url));
 await loadEnvFile(new URL("../../.env", import.meta.url));
@@ -67,10 +69,18 @@ async function processRequest(request) {
     } else {
       throw new Error(`Unsupported request type: ${request.type}`);
     }
-    const responseResult = await maybeEncryptResult(request, result);
+    let responseResult = await maybeEncryptResult(request, result);
+    let responseBody = JSON.stringify({ id: request.id, status: "done", result: responseResult });
+    if (responseBody.length > MAX_RESPONSE_BYTES) {
+      responseResult = await maybeEncryptResult(request, compactCloudflareResult(result));
+      responseBody = JSON.stringify({ id: request.id, status: "done", result: responseResult });
+    }
+    if (responseBody.length > MAX_RESPONSE_BYTES) {
+      throw new Error(`Cloudflare shadow response too large: ${responseBody.length} bytes`);
+    }
     await shadowFetch("/api/cf-shadow/agent/respond", {
       method: "POST",
-      body: JSON.stringify({ id: request.id, status: "done", result: responseResult }),
+      body: responseBody,
     });
     console.log(`cloudflare shadow request ${request.id} done (${request.type})`);
   } catch (error) {
@@ -92,6 +102,7 @@ async function processRequest(request) {
 async function maybeEncryptResult(request, result) {
   const publicKeyJwk = request.payload?.crypto?.ecdhPublicKey;
   if (!publicKeyJwk) return result;
+  const useCompression = request.payload?.crypto?.compression === "gzip";
   const peerPublicKey = await subtle.importKey(
     "jwk",
     JSON.parse(base64UrlDecode(publicKeyJwk)),
@@ -108,16 +119,97 @@ async function maybeEncryptResult(request, result) {
     ["encrypt"],
   );
   const iv = webcrypto.getRandomValues(new Uint8Array(12));
-  const plaintext = new TextEncoder().encode(JSON.stringify(result));
+  const plaintext = useCompression
+    ? gzipSync(Buffer.from(JSON.stringify(result), "utf8"))
+    : new TextEncoder().encode(JSON.stringify(result));
   const ciphertext = await subtle.encrypt({ name: "AES-GCM", iv }, aesKey, plaintext);
   const agentPublicJwk = await subtle.exportKey("jwk", keyPair.publicKey);
   return {
     encrypted: true,
     alg: "ECDH-P-256+A256GCM",
+    ...(useCompression ? { compression: "gzip" } : {}),
     ecdhPublicKey: base64UrlEncode(JSON.stringify(agentPublicJwk)),
     iv: base64UrlEncodeBytes(iv),
     ciphertext: base64UrlEncodeBytes(new Uint8Array(ciphertext)),
   };
+}
+
+function compactCloudflareResult(result) {
+  if (!result || typeof result !== "object") return result;
+  const compacted = { ...result };
+  if (result.patient && typeof result.patient === "object") {
+    compacted.patient = compactPatient(result.patient);
+    compacted.text = `${result.text || ""}\n\n[影子版提示] 此病人資料量超過 Cloudflare 暫存限制，已保留摘要與各分頁最近重點，長篇報告已截短。`.trim();
+  }
+  if (result.roster && typeof result.roster === "object") {
+    compacted.roster = {
+      ...result.roster,
+      patients: limitArray(result.roster.patients, 80, (row) => compactObject(row, 280)),
+    };
+  }
+  return compacted;
+}
+
+function compactPatient(patient) {
+  return compactObject({
+    ...patient,
+    tpr: limitArray(patient.tpr || patient.vitals, 80, (row) => compactObject(row, 180)),
+    vitals: limitArray(patient.vitals, 80, (row) => compactObject(row, 180)),
+    labs: limitArray(patient.labs, 160, (row) => compactObject(row, 180)),
+    labMatrix: compactLabMatrix(patient.labMatrix),
+    imaging: limitArray(patient.imaging, 30, compactReportRow),
+    surgeries: limitArray(patient.surgeries, 20, compactReportRow),
+    pathology: limitArray(patient.pathology, 20, compactReportRow),
+    orders: limitArray(patient.orders, 180, (row) => compactObject(row, 240)),
+    nursing: limitArray(patient.nursing, 180, (row) => compactObject(row, 260)),
+    glucose: limitArray(patient.glucose, 80, (row) => compactObject(row, 160)),
+  }, 600);
+}
+
+function compactLabMatrix(matrix) {
+  if (!matrix || typeof matrix !== "object") return matrix;
+  return compactObject({
+    ...matrix,
+    rows: limitArray(matrix.rows, 80, (row) => compactObject(row, 180)),
+    columns: limitArray(matrix.columns, 3, (row) => compactObject(row, 120)),
+  }, 300);
+}
+
+function compactReportRow(row) {
+  return compactObject(row, 600, {
+    report: 1800,
+    content: 1800,
+    impression: 900,
+    finding: 1200,
+    findings: 1200,
+    note: 1200,
+    operativeProcedure: 1800,
+    operativeFindings: 1400,
+    procedure: 500,
+  });
+}
+
+function compactObject(value, defaultStringLimit = 320, perKeyLimits = {}) {
+  if (value == null || typeof value !== "object") return compactScalar(value, defaultStringLimit);
+  if (Array.isArray(value)) return limitArray(value, 40, (item) => compactObject(item, defaultStringLimit, perKeyLimits));
+  const out = {};
+  for (const [key, item] of Object.entries(value)) {
+    const limit = perKeyLimits[key] || defaultStringLimit;
+    out[key] = item && typeof item === "object" ? compactObject(item, limit, perKeyLimits) : compactScalar(item, limit);
+  }
+  return out;
+}
+
+function compactScalar(value, maxLength) {
+  if (typeof value !== "string") return value;
+  const text = value.replace(/\s+/g, " ").trim();
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, Math.max(0, maxLength - 18))}... [truncated]`;
+}
+
+function limitArray(value, maxItems, mapper) {
+  const rows = Array.isArray(value) ? value : [];
+  return rows.slice(0, maxItems).map(mapper);
 }
 
 async function shadowFetch(path, options = {}) {

@@ -149,7 +149,7 @@ function parseJsonBody(body) {
 async function createShadowRequest(type, payload) {
   if (!state.pin) throw new Error("請先輸入影子工作站 PIN。");
   const cryptoState = await createCryptoState();
-  payload.crypto = { ecdhPublicKey: cryptoState.publicKey };
+  payload.crypto = { ecdhPublicKey: cryptoState.publicKey, compression: cryptoState.compression };
   const request = await shadowFetch("/api/shadow/request", {
     method: "POST",
     body: JSON.stringify({ type, payload }),
@@ -178,7 +178,7 @@ async function createCryptoState() {
   if (!crypto?.subtle) return { privateKey: null, publicKey: "" };
   const keyPair = await crypto.subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, ["deriveKey"]);
   const publicJwk = await crypto.subtle.exportKey("jwk", keyPair.publicKey);
-  return { privateKey: keyPair.privateKey, publicKey: base64UrlEncode(JSON.stringify(publicJwk)) };
+  return { privateKey: keyPair.privateKey, publicKey: base64UrlEncode(JSON.stringify(publicJwk)), compression: "gzip" };
 }
 
 async function decryptResultIfNeeded(result, privateKey) {
@@ -199,7 +199,18 @@ async function decryptResultIfNeeded(result, privateKey) {
     ["decrypt"],
   );
   const plaintext = await crypto.subtle.decrypt({ name: "AES-GCM", iv: base64UrlToBytes(result.iv) }, aesKey, base64UrlToBytes(result.ciphertext));
-  return JSON.parse(new TextDecoder().decode(plaintext));
+  const bytes = result.compression === "gzip"
+    ? await decompressGzipBytes(new Uint8Array(plaintext))
+    : new Uint8Array(plaintext);
+  return JSON.parse(new TextDecoder().decode(bytes));
+}
+
+async function decompressGzipBytes(bytes) {
+  if (!("DecompressionStream" in window)) {
+    throw new Error("瀏覽器不支援 gzip 解壓縮，請更新 Chrome 後再試。");
+  }
+  const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
 }
 
 function base64UrlEncode(value) {
