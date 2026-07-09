@@ -354,9 +354,11 @@ async function enrichSurgeryRows({ rows, feeno, chartNo, onepageBase, appToken, 
 
 function normalizeSurgeries(rows) {
   return sortByTimeDesc(rows.map((row) => {
-    const reportText = cleanReport(firstValue(
+    const reportText = cleanSurgeryReport(firstValue(
       row.full_report,
+      row.html_report,
       row.report,
+      row.report_text,
       row.record,
       row.op_record,
       row.operation_record,
@@ -366,9 +368,29 @@ function normalizeSurgeries(rows) {
       row.note,
       row.summary,
       row.content,
-      row.text
+      row.text,
+      row.報告
     ));
+    const sectionText = cleanSurgeryReport([
+      reportText,
+      row.operativeProcedure,
+      row.operative_procedure,
+      row.operative_procedure_text,
+      row.op_procedure,
+      row.operation_procedure,
+      row.oper_proc,
+      row.op_proc,
+      row.surgical_procedure,
+      row.procedure_detail,
+      row.procedure_text,
+      row.findings,
+      row.finding,
+      row.note,
+      row.record,
+      row.report,
+    ].filter(Boolean).join("\n"));
     const reportSections = extractSurgeryReportSections(reportText);
+    const fallbackSections = extractSurgeryReportSections(sectionText);
     const operativeProcedure = cleanReport(firstValue(
       row.operativeProcedure,
       row.operative_procedure,
@@ -380,9 +402,13 @@ function normalizeSurgeries(rows) {
       row.surgical_procedure,
       row.procedure_detail,
       row.procedure_text,
+      row.operation_steps,
+      row.operating_steps,
+      row.steps,
       row.手術步驟,
-      row.手術過程
-    )) || reportSections.operativeProcedure;
+      row.手術過程,
+      row.手術程序
+    )) || reportSections.operativeProcedure || fallbackSections.operativeProcedure;
     const finding = cleanReport(firstValue(
       row.operativeFindings,
       row.operative_findings,
@@ -393,7 +419,7 @@ function normalizeSurgeries(rows) {
       row.finding,
       row.手術所見,
       row.手術發現
-    )) || reportSections.finding;
+    )) || reportSections.finding || fallbackSections.finding;
 
     return {
       date: formatDate(firstValue(row.date, row.op_date, row.operation_date)),
@@ -426,14 +452,19 @@ function normalizeSurgeries(rows) {
 }
 
 function extractSurgeryReportSections(reportText) {
-  const text = cleanReport(reportText);
+  const text = cleanSurgeryReport(reportText)
+    .replace(/(Operative\s+Findings?\s*[:：])/gi, "\n$1\n")
+    .replace(/(Operative\s+Procedure\s*[:：])/gi, "\n$1\n")
+    .replace(/(手術所見\s*[:：])/g, "\n$1\n")
+    .replace(/(手術(?:步驟|過程|程序)\s*[:：])/g, "\n$1\n");
   if (!text) return { finding: "", operativeProcedure: "" };
   return {
-    finding: extractNamedSection(text, /Operative\s+Findings?\s*[:：]/i, [
-      /Operative\s+Procedure\s*[:：]/i,
+    finding: extractNamedSection(text, /(?:Operative\s+Findings?|手術所見)\s*[:：]/i, [
+      /(?:Operative\s+Procedure|手術(?:步驟|過程|程序))\s*[:：]/i,
       /(?:^|\n).{0,30}(?:簽名|記錄完成時間|列印時間|Signature|Signed\s+by)/i,
     ]),
-    operativeProcedure: extractNamedSection(text, /Operative\s+Procedure\s*[:：]/i, [
+    operativeProcedure: extractNamedSection(text, /(?:Operative\s+Procedure|手術(?:步驟|過程|程序))\s*[:：]/i, [
+      /(?:^|\n).{0,30}(?:醫師簽名|主治醫師簽名|記錄完成時間|列印時間|Signature|Signed\s+by|Print\s+time)/i,
       /(?:^|\n).{0,30}(?:簽名|記錄完成時間|列印時間|Signature|Signed\s+by)/i,
     ]),
   };
@@ -539,6 +570,25 @@ function cleanReport(value) {
     .replace(/[ \t]+\n/g, "\n")
     .replace(/\n{3,}/g, "\n\n")
     .replace(/[ \t]{2,}/g, " ")
+    .trim();
+}
+
+function cleanSurgeryReport(value) {
+  return String(value || "")
+    .replace(/<\/(?:tr|p|div|section|article|h[1-6])>/gi, "\n")
+    .replace(/<\/t[dh]>/gi, "\n")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<t[dh][^>]*>/gi, "")
+    .replace(/<tr[^>]*>/gi, "\n")
+    .replace(/<[^>]*>/g, " ")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n[ \t]+/g, "\n")
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
 

@@ -921,6 +921,51 @@ button:disabled {
   max-width: 760px;
 }
 
+.chronology-panel {
+  display: grid;
+  grid-template-rows: minmax(320px, 1fr) auto;
+  gap: 12px;
+  height: min(72vh, 760px);
+  min-height: 480px;
+}
+
+.chronology-scroll {
+  overflow-y: auto;
+  scroll-behavior: smooth;
+}
+
+.record-search-bar {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fff;
+  padding: 10px 12px;
+}
+
+.record-search-bar label {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.record-search-bar input {
+  width: 100%;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  padding: 9px 10px;
+  font: inherit;
+  color: var(--text);
+}
+
+.searchable-table tr.is-hidden,
+.no-search-results.is-hidden {
+  display: none;
+}
+
+.no-search-results.compact {
+  margin-top: 10px;
+}
+
 .glucose-table th,
 .glucose-table td {
   min-width: 110px;

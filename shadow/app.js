@@ -895,10 +895,12 @@ function parseReferenceRange(refText) {
 }
 
 function renderOrders(orders) {
-  return table(
+  const sorted = sortChronological(orders, (row) => firstDisplayLine(row.start || row.signedAt || row.givenAt || row.end));
+  return searchableTable(
     ["開始", "結束", "出院醫囑", "DC", "醫囑內容", "簽收者", "簽收時間", "給藥者", "給藥時間"],
-    orders.map((row) => [row.start, row.end, row.dischargeOrder, row.dc, row.item, row.signer, row.signedAt, row.giver, row.givenAt]),
-    "orders-table"
+    sorted.map((row) => [row.start, row.end, row.dischargeOrder, row.dc, row.item, row.signer, row.signedAt, row.giver, row.givenAt]),
+    "orders-table",
+    "搜尋醫囑關鍵字"
   );
 }
 
@@ -1076,11 +1078,16 @@ function surgeryExtraNote(row = {}, operativeProcedure = "") {
 function renderNursing(nursing) {
   if (!nursing.length) return missingDataState();
   const sorted = [...nursing].sort((a, b) => parseDisplayTime(a.time) - parseDisplayTime(b.time));
-  return table(
+  return searchableTable(
     ["時間", "類別", "內容", "輸入者"],
     sorted.map((row) => [row.time, row.type || "護理紀錄", row.note || "", row.author || ""]),
-    "nursing-table"
+    "nursing-table",
+    "搜尋護理紀錄關鍵字"
   );
+}
+
+function sortChronological(rows, timeGetter) {
+  return [...rows].sort((a, b) => parseDisplayTime(timeGetter(a)) - parseDisplayTime(timeGetter(b)));
 }
 
 function renderTpr(tpr, io) {
@@ -1369,6 +1376,32 @@ function table(headers, rows = [], extraClass = "") {
   `;
 }
 
+function searchableTable(headers, rows = [], extraClass = "", placeholder = "搜尋關鍵字") {
+  if (!rows.length) return missingDataState();
+  return `
+    <section class="chronology-panel" data-auto-latest="true">
+      <div class="table-wrap chronology-scroll ${escapeHtml(extraClass)}">
+        <table class="data-table searchable-table">
+          <thead><tr>${headers.map((h) => `<th>${escapeHtml(h)}</th>`).join("")}</tr></thead>
+          <tbody>
+            ${rows.map((row) => {
+              const searchText = row.map((cell) => String(cell ?? "")).join(" ");
+              return `<tr data-search-text="${escapeHtml(searchText.toLowerCase())}">${row.map((cell) => `<td>${isTrustedHtml(cell) ? cell : escapeHtml(cell)}</td>`).join("")}</tr>`;
+            }).join("")}
+          </tbody>
+        </table>
+        <div class="empty-state compact no-search-results is-hidden">沒有符合關鍵字的紀錄。</div>
+      </div>
+      <div class="record-search-bar">
+        <label>
+          <span>關鍵字搜尋</span>
+          <input class="record-search-input" type="search" placeholder="${escapeHtml(placeholder)}" autocomplete="off" />
+        </label>
+      </div>
+    </section>
+  `;
+}
+
 function isTrustedHtml(value) {
   const text = String(value ?? "");
   return text.startsWith("<span") || text.startsWith("<details");
@@ -1523,7 +1556,32 @@ function switchTab(name) {
   state.currentTab = name;
   for (const tab of el.tabs) tab.classList.toggle("is-active", tab.dataset.tab === name);
   for (const panel of el.panels) panel.classList.toggle("is-hidden", panel.dataset.panel !== name);
+  if (name === "orders" || name === "nursing") requestAnimationFrame(() => scrollPanelToLatest(name));
 }
+
+function scrollPanelToLatest(name) {
+  const panel = el.panels.find((item) => item.dataset.panel === name);
+  const scrollBox = panel?.querySelector(".chronology-scroll");
+  if (scrollBox) scrollBox.scrollTop = scrollBox.scrollHeight;
+}
+
+function filterChronologyPanel(input) {
+  const panel = input.closest(".chronology-panel");
+  if (!panel) return;
+  const query = input.value.trim().toLowerCase();
+  const rows = [...panel.querySelectorAll("tbody tr[data-search-text]")];
+  let visible = 0;
+  for (const row of rows) {
+    const matched = !query || row.dataset.searchText.includes(query);
+    row.classList.toggle("is-hidden", !matched);
+    if (matched) visible += 1;
+  }
+  panel.querySelector(".no-search-results")?.classList.toggle("is-hidden", visible !== 0);
+}
+
+document.addEventListener("input", (event) => {
+  if (event.target?.classList?.contains("record-search-input")) filterChronologyPanel(event.target);
+});
 
 document.addEventListener("click", async (event) => {
   const switchKey = event.target?.dataset?.patientKey;
