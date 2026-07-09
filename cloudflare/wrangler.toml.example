@@ -1,4 +1,4 @@
-name = "clinical-tool-shadow-poc"
+name = "data-viewer"
 main = "worker.mjs"
 compatibility_date = "2026-07-09"
 
@@ -8,7 +8,7 @@ binding = "ASSETS"
 
 [[d1_databases]]
 binding = "DB"
-database_name = "clinical-tool-shadow-poc"
+database_name = "data-viewer"
 database_id = "<fill after creating D1 database>"
 
 [vars]

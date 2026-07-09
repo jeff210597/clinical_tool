@@ -51,7 +51,7 @@ Install and login to Wrangler, or provide a Cloudflare API token with permission
 Create a D1 database:
 
 ```powershell
-npx wrangler d1 create clinical-tool-shadow-poc
+npx wrangler d1 create data-viewer
 ```
 
 Copy `cloudflare/wrangler.toml.example` to `cloudflare/wrangler.toml` and fill `database_id`.
@@ -59,7 +59,7 @@ Copy `cloudflare/wrangler.toml.example` to `cloudflare/wrangler.toml` and fill `
 Apply schema:
 
 ```powershell
-npx wrangler d1 execute clinical-tool-shadow-poc --remote --file cloudflare/schema.sql
+npx wrangler d1 execute data-viewer --remote --file cloudflare/schema.sql
 ```
 
 Set secrets:
@@ -117,7 +117,7 @@ For connection-only testing, run `cloudflare_poll_agent.mjs --echo-only`. Remove
 Cloudflare Workers now hosts the full shadow workstation UI and the relay mailbox at one URL:
 
 ```text
-https://clinical-tool-shadow-poc.jeff0923583891.workers.dev
+https://data-viewer.workspace4829.workers.dev
 ```
 
 Netlify remains optional as a fallback, but is no longer required for the Cloudflare shadow path.

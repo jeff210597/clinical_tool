@@ -31,7 +31,7 @@ SHADOW_API_BASE=https://clinical-tool-shadow.netlify.app
 SHADOW_RELAY_KEY=
 SHADOW_PIN=
 SHADOW_POLL_INTERVAL_MS=3000
-CF_SHADOW_API_BASE=https://clinical-tool-shadow-poc.jeff0923583891.workers.dev
+CF_SHADOW_API_BASE=https://data-viewer.workspace4829.workers.dev
 CF_SHADOW_RELAY_KEY=
 CF_SHADOW_PIN=
 CF_SHADOW_POLL_INTERVAL_MS=3000
@@ -113,7 +113,7 @@ Enter `SHADOW_PIN` in the web page, then query a physician id or patient chart n
 Cloudflare shadow workstation:
 
 ```text
-https://clinical-tool-shadow-poc.jeff0923583891.workers.dev
+https://data-viewer.workspace4829.workers.dev
 ```
 
 Enter `CF_SHADOW_PIN` in the web page, then query a physician id or patient chart number. This path does not require Netlify.
