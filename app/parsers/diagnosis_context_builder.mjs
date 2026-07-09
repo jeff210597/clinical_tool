@@ -1,5 +1,10 @@
 const DIAGNOSIS_RULES = [
   {
+    key: "sepsis",
+    label: "Sepsis, unspecified organism",
+    test: /sepsis|septicemia|敗血症|菌血症/i,
+  },
+  {
     key: "colorectal_cancer",
     label: "Rectal/colorectal cancer",
     test: /colorectal|rectal|colon|sigmoid|rectosigmoid|adenocarcinoma|carcinoma|malignan|大腸癌|直腸癌|結腸癌/i,
@@ -58,6 +63,26 @@ export function buildDiagnosisContext(patient = {}) {
     primary: true,
   });
 
+  if (admissionReason && !diagnosisMap.size) {
+    upsertClinicalItem(diagnosisMap, "admission_reason", {
+      key: "admission_reason",
+      label: admissionReason,
+      text: admissionReason,
+      source: "NIS 成人入院評估單：入院原因",
+      date: assessment.updatedAt || assessment.capturedAt || "",
+      status: "primary",
+      confidence: "high",
+    });
+    addEvidence(evidence, {
+      kind: "diagnosis",
+      text: clip(admissionReason),
+      source: "NIS 成人入院評估單：入院原因",
+      date: assessment.updatedAt || assessment.capturedAt || "",
+      confidence: "high",
+      key: "admission_reason",
+    });
+  }
+
   addHistoryFromText({
     text: assessmentHistory,
     source: "NIS 成人入院評估單：過去病史",
@@ -74,6 +99,7 @@ export function buildDiagnosisContext(patient = {}) {
     diagnosisMap,
     historyMap,
     evidence,
+    patient,
   });
 
   addSupplementalRows({
@@ -84,6 +110,7 @@ export function buildDiagnosisContext(patient = {}) {
     diagnosisMap,
     historyMap,
     evidence,
+    patient,
   });
 
   addSupplementalRows({
@@ -94,6 +121,7 @@ export function buildDiagnosisContext(patient = {}) {
     diagnosisMap,
     historyMap,
     evidence,
+    patient,
   });
 
   finalizeDiagnosisMaps({ diagnosisMap, historyMap, patient });
@@ -154,14 +182,34 @@ function addHistoryFromText({ text, source, date, historyMap, evidence }) {
   }
 }
 
-function addSupplementalRows({ rows, source, textOf, dateOf, diagnosisMap, historyMap, evidence }) {
+function addSupplementalRows({ rows, source, textOf, dateOf, diagnosisMap, historyMap, evidence, patient }) {
   for (const row of rows.slice(0, 30)) {
     const text = cleanText(textOf(row));
     if (!text) continue;
     const date = dateOf(row);
-    addDiagnosisCandidates({ text, source, date, diagnosisMap, evidence, primary: false });
+    if (!diagnosisMap.size || isSameAdmissionEvidence(date, patient)) {
+      addDiagnosisCandidates({ text, source, date, diagnosisMap, evidence, primary: false });
+    }
     addHistoryCandidates({ text, source, date, historyMap, evidence, primary: false });
   }
+}
+
+function isSameAdmissionEvidence(date, patient = {}) {
+  const admissionStart = patient.admissionPeriod?.startDate || patient.admissionDate || "";
+  if (!date || !admissionStart) return false;
+  const evidenceDate = parseClinicalDate(date);
+  const startDate = parseClinicalDate(admissionStart);
+  if (!evidenceDate || !startDate) return false;
+  const dayMs = 24 * 60 * 60 * 1000;
+  return evidenceDate.getTime() >= startDate.getTime() - dayMs;
+}
+
+function parseClinicalDate(value) {
+  const text = String(value || "").trim();
+  const match = text.match(/(\d{4})[/-](\d{1,2})[/-](\d{1,2})/);
+  if (!match) return null;
+  const date = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+  return Number.isNaN(date.getTime()) ? null : date;
 }
 
 function addDiagnosisCandidates({ text, source, date, diagnosisMap, evidence, primary }) {

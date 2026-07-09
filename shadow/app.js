@@ -859,7 +859,7 @@ function labGroupLabel(group) {
 
 function labValueHtml(row = {}) {
   const flag = normalizeLabFlag(row);
-  const value = [row.latest ?? row.value ?? "", row.rawFlag || row.flag || ""].filter(Boolean).join(" ");
+  const value = [labDisplayValue(row), row.rawFlag || row.flag || ""].filter(Boolean).join(" ");
   if (!value) return "";
   return `<span class="lab-value ${flag ? `lab-${escapeHtml(flag)}` : ""}">${escapeHtml(value)}</span>`;
 }
@@ -868,18 +868,31 @@ function labCellHtml(cell) {
   if (!cell) return "";
   if (typeof cell === "object") {
     const flag = normalizeLabFlag(cell);
-    const text = [cell.value, cell.unit, cell.rawFlag].filter(Boolean).join(" ");
+    const text = [labDisplayValue(cell), cell.unit, cell.rawFlag || cell.flag].filter(Boolean).join(" ");
     return text ? `<span class="lab-value ${flag ? `lab-${escapeHtml(flag)}` : ""}">${escapeHtml(text)}</span>` : "";
   }
   const parsed = parseLabTextFlag(cell);
   return parsed.text ? `<span class="lab-value ${parsed.flag ? `lab-${escapeHtml(parsed.flag)}` : ""}">${escapeHtml(parsed.text)}</span>` : "";
 }
 
+function labDisplayValue(row = {}) {
+  return firstNonEmpty(row.value, row.latest, row.result, row.text, row.display, row.rawValue);
+}
+
+function firstNonEmpty(...values) {
+  for (const value of values) {
+    if (value === undefined || value === null) continue;
+    const text = String(value).trim();
+    if (text) return text;
+  }
+  return "";
+}
+
 function normalizeLabFlag(row = {}) {
   const flag = String(row.flag || row.rawFlag || "").trim().toLowerCase();
   if (/^(h|hi|high|\+|↑|red)$/.test(flag) || /\bh\b|high|↑/.test(flag)) return "high";
   if (/^(l|lo|low|↓|blue)$/.test(flag) || /\bl\b|low|↓/.test(flag)) return "low";
-  const numeric = Number.parseFloat(String(row.latest ?? row.value ?? "").replace(/,/g, ""));
+  const numeric = Number.parseFloat(String(labDisplayValue(row)).replace(/,/g, ""));
   const ref = parseReferenceRange(row.ref || "");
   if (Number.isFinite(numeric) && ref) {
     if (ref.low !== null && numeric < ref.low) return "low";
