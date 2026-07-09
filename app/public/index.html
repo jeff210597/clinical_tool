@@ -28,10 +28,10 @@
             <div class="search-row"><input id="physicianQuery" name="physicianQuery" autocomplete="off" placeholder="醫師員工編號，如 09432" /><button type="submit">住院</button></div>
           </form>
           <div id="physicianRosterStatus" class="eyebrow">輸入醫師員工編號後可快速列出住院病人。</div>
-          <div class="roster-actions"><button id="openRosterPatients" type="button" disabled>開啟全部病人</button></div>
+          <div class="roster-actions"><button id="openRosterPatients" type="button" disabled>開啟全部病人</button><button id="refreshRosterPatients" type="button" disabled>更新全部摘要</button></div>
           <div id="physicianRosterList" class="patient-list roster-list"></div>
         </section>
-        <section><div class="section-title"><span>最近擷取</span><button id="reloadRecent" class="icon-button" type="button" title="重新整理最近擷取">↻</button></div><div id="recentList" class="patient-list"></div></section>
+        <section><div class="section-title"><span>最近擷取</span><button id="reloadRecent" class="icon-button" type="button" title="重新整理最近擷取清單">↻</button></div><p id="recentStatus" class="eyebrow">重整只更新左側清單。</p><div id="recentList" class="patient-list"></div></section>
       </aside>
       <main class="content">
         <header class="patient-header"><div><p class="eyebrow">目前病人</p><h2 id="patientTitle">尚未選擇</h2><p id="patientMeta">請先以 Onepage 帳號登入後再查詢。</p></div><div class="actions"><button id="refreshPatient" type="button" disabled>重新整理</button><button id="copySummary" type="button" disabled>複製摘要</button></div></header>

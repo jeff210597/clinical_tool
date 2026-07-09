@@ -13,12 +13,14 @@ const el = {
   searchForm: document.querySelector("#searchForm"),
   patientQuery: document.querySelector("#patientQuery"),
   recentList: document.querySelector("#recentList"),
+  recentStatus: document.querySelector("#recentStatus"),
   reloadRecent: document.querySelector("#reloadRecent"),
   physicianRosterForm: document.querySelector("#physicianRosterForm"),
   physicianQuery: document.querySelector("#physicianQuery"),
   physicianRosterStatus: document.querySelector("#physicianRosterStatus"),
   physicianRosterList: document.querySelector("#physicianRosterList"),
   openRosterPatients: document.querySelector("#openRosterPatients"),
+  refreshRosterPatients: document.querySelector("#refreshRosterPatients"),
   loginForm: document.querySelector("#loginForm"),
   loginUser: document.querySelector("#loginUser"),
   loginPassword: document.querySelector("#loginPassword"),
@@ -212,6 +214,7 @@ function renderAuth() {
   el.physicianQuery.disabled = !loggedIn;
   el.physicianRosterForm.querySelector("button").disabled = !loggedIn;
   el.openRosterPatients.disabled = !loggedIn || !state.physicianRoster.length;
+  el.refreshRosterPatients.disabled = !loggedIn || !state.physicianRoster.length;
   el.reloadRecent.disabled = !loggedIn;
   if (loggedIn) {
     el.currentUserLabel.textContent = `${state.user.displayName || state.user.username} 已解鎖`;
@@ -232,10 +235,15 @@ async function refreshAuth() {
   renderAuth();
 }
 
+function updateRecentStatus(text) {
+  if (el.recentStatus) el.recentStatus.textContent = text;
+}
+
 function renderRecent(items) {
   el.recentList.innerHTML = "";
   if (!items.length) {
     el.recentList.innerHTML = `<div class="empty-state compact">尚無已擷取病人。</div>`;
+    updateRecentStatus("清單目前沒有資料。重整只更新左側清單。");
     return;
   }
 
@@ -250,6 +258,8 @@ function renderRecent(items) {
     button.addEventListener("click", () => loadPatient(item.patientRef));
     el.recentList.append(button);
   }
+  const newest = items[0]?.updatedAt ? `最新資料 ${formatTime(items[0].updatedAt)} 更新` : "清單已更新";
+  updateRecentStatus(`${newest}；重整只更新左側清單。`);
 }
 
 function renderPhysicianRoster(items = [], doctor = state.physicianRosterDoctor, statusText = "") {
@@ -257,6 +267,7 @@ function renderPhysicianRoster(items = [], doctor = state.physicianRosterDoctor,
   state.physicianRosterDoctor = doctor;
   el.physicianRosterList.innerHTML = "";
   el.openRosterPatients.disabled = !state.user || !items.length;
+  el.refreshRosterPatients.disabled = !state.user || !items.length;
   if (!state.user) {
     el.physicianRosterStatus.textContent = "請先輸入 PIN 後查詢醫師住院清單。";
     return;
@@ -1326,6 +1337,7 @@ async function openPhysicianRosterPatients() {
   const items = state.physicianRoster || [];
   if (!state.user || !items.length) return;
   el.openRosterPatients.disabled = true;
+  el.refreshRosterPatients.disabled = true;
   el.physicianRosterForm.querySelector("button").disabled = true;
   let opened = 0;
   try {
@@ -1342,6 +1354,41 @@ async function openPhysicianRosterPatients() {
     el.physicianRosterStatus.textContent = `開啟病人清單中斷：${error.message || "查詢失敗"}`;
   } finally {
     el.openRosterPatients.disabled = !state.user || !state.physicianRoster.length;
+    el.refreshRosterPatients.disabled = !state.user || !state.physicianRoster.length;
+    el.physicianRosterForm.querySelector("button").disabled = !state.user;
+  }
+}
+
+async function refreshPhysicianRosterSummaries() {
+  const items = state.physicianRoster || [];
+  if (!state.user || !items.length) return;
+  const previousCurrentKey = patientKey(state.currentPatient);
+  el.openRosterPatients.disabled = true;
+  el.refreshRosterPatients.disabled = true;
+  el.physicianRosterForm.querySelector("button").disabled = true;
+  let refreshed = 0;
+  try {
+    for (const [index, item] of items.entries()) {
+      const query = item.chartNo || item.bedNo || item.feeNo;
+      if (!query) continue;
+      el.physicianRosterStatus.textContent = `正在更新 ${index + 1}/${items.length}：${item.name || item.chartNo || query}`;
+      await loadPatient(query, { updateRecent: false, silent: true });
+      refreshed += 1;
+    }
+    const doctor = state.physicianRosterDoctor || {};
+    const doctorText = `${doctor.id || ""}${doctor.name ? ` ${doctor.name}` : ""}`.trim() || "醫師清單";
+    el.physicianRosterStatus.textContent = `${doctorText}：已更新 ${refreshed} 位病人摘要`;
+    const previousPatient = state.openPatients.find((patient) => patientKey(patient) === previousCurrentKey);
+    if (previousPatient) {
+      renderPatient(previousPatient, { store: false });
+      switchTab(state.currentTab);
+    }
+    await loadRecent().catch(() => null);
+  } catch (error) {
+    el.physicianRosterStatus.textContent = `更新全部摘要中斷：${error.message || "查詢失敗"}`;
+  } finally {
+    el.openRosterPatients.disabled = !state.user || !state.physicianRoster.length;
+    el.refreshRosterPatients.disabled = !state.user || !state.physicianRoster.length;
     el.physicianRosterForm.querySelector("button").disabled = !state.user;
   }
 }
@@ -1520,12 +1567,14 @@ el.reloadRecent.addEventListener("click", async () => {
     el.serviceStatus.textContent = "最近擷取已更新";
   } catch {
     el.recentList.innerHTML = `<div class="empty-state compact">讀取失敗，請確認 PIN 或 relay 狀態。</div>`;
+    updateRecentStatus("清單讀取失敗，請確認 PIN 或 relay 狀態。");
   } finally {
     el.reloadRecent.textContent = originalText || "↻";
     el.reloadRecent.disabled = !state.user;
   }
 });
 el.openRosterPatients.addEventListener("click", openPhysicianRosterPatients);
+el.refreshRosterPatients.addEventListener("click", refreshPhysicianRosterSummaries);
 el.refreshPatient.addEventListener("click", refreshPatient);
 document.addEventListener("click", async (event) => {
   if (event.target?.id !== "copyStructuredSummary" || !state.currentPatient) return;
