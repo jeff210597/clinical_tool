@@ -76,6 +76,35 @@ http://10.97.6.34:8766/
 
 The IP may change on another host. Use the IP printed by `Start_Workbench_LAN.cmd`.
 
+## Keep LAN Workstation Running
+
+To make the LAN workstation recover automatically after login or after the
+local Node process stops, install the local watchdog:
+
+```powershell
+.\Install_Workbench_Autostart.cmd
+```
+
+What it does:
+
+- Checks `http://127.0.0.1:8766/api/health`.
+- Starts `app/server.mjs` on `0.0.0.0:8766` when the service is down.
+- Rechecks every 5 minutes after Windows login.
+- Writes local status to `app/.local/workbench_watchdog.log`.
+
+What it does not do:
+
+- It does not change Windows Firewall rules.
+- It does not create VPN, tunnel, reverse proxy, or routing rules.
+- It does not expose the workstation outside the network by itself.
+
+If Windows allows task registration, the installer uses Task Scheduler. If that
+is denied, it falls back to a per-user Startup shortcut:
+
+```text
+%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\Clinical Tool Workbench Watchdog.lnk
+```
+
 ## Start Discord Relay
 
 ```powershell
