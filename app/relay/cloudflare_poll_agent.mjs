@@ -1,10 +1,12 @@
 import { readFile } from "node:fs/promises";
 import { webcrypto } from "node:crypto";
 import { gzipSync } from "node:zlib";
-import { patientRoundingSummary, physicianRosterSummary } from "../services/relay_summary.mjs";
+import { patientRoundingSummary, patientLabHistory, physicianRosterSummary } from "../services/relay_summary.mjs";
 
 const subtle = webcrypto.subtle;
 const MAX_RESPONSE_BYTES = 480 * 1024;
+const DEFAULT_POLL_INTERVAL_MS = 1500;
+const MIN_POLL_INTERVAL_MS = 1500;
 
 await loadEnvFile(new URL("../.env", import.meta.url));
 await loadEnvFile(new URL("../../.env", import.meta.url));
@@ -12,7 +14,9 @@ await loadEnvFile(new URL("../../.env", import.meta.url));
 const config = {
   apiBase: (process.env.CF_SHADOW_API_BASE || "").replace(/\/$/, ""),
   relayKey: process.env.CF_SHADOW_RELAY_KEY || "",
-  intervalMs: Number(process.env.CF_SHADOW_POLL_INTERVAL_MS || 3000),
+  // Keep outbound-only polling responsive without allowing a configuration
+  // change to create sub-1.5-second traffic bursts on the hospital network.
+  intervalMs: Math.max(MIN_POLL_INTERVAL_MS, Number(process.env.CF_SHADOW_POLL_INTERVAL_MS || DEFAULT_POLL_INTERVAL_MS)),
   echoOnly: process.argv.includes("--echo-only") || process.env.CF_SHADOW_ECHO_ONLY === "1",
 };
 
@@ -65,7 +69,9 @@ async function processRequest(request) {
     } else if (request.type === "ward") {
       result = await physicianRosterSummary(request.payload?.doctorId);
     } else if (request.type === "summary") {
-      result = await patientRoundingSummary(request.payload?.query);
+      result = await patientRoundingSummary(request.payload?.query, null, request.payload || {});
+    } else if (request.type === "labs") {
+      result = await patientLabHistory(request.payload?.query, request.payload || {});
     } else {
       throw new Error(`Unsupported request type: ${request.type}`);
     }

@@ -313,17 +313,39 @@ button:disabled {
 }
 
 .patient-window-tabs {
-  display: flex;
-  gap: 6px;
-  overflow-x: auto;
   margin: 16px 0 0;
-  padding-bottom: 2px;
+}
+
+.patient-window-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.patient-window-toggle {
+  min-height: 34px;
+  padding: 0 12px;
+  color: var(--accent-strong);
+}
+
+.patient-window-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.patient-window-grid[hidden] {
+  display: none;
 }
 
 .patient-window-tab {
-  display: inline-flex;
+  display: flex;
   align-items: center;
-  flex: 0 0 auto;
+  min-width: 0;
   border: 1px solid var(--line);
   border-radius: 6px;
   background: #f8fafc;
@@ -344,14 +366,27 @@ button:disabled {
 }
 
 .patient-window-switch {
-  max-width: 220px;
-  padding: 0 10px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+  padding: 8px 10px;
+  text-align: left;
+  line-height: 1.35;
+}
+
+.patient-window-switch strong,
+.patient-window-switch span {
+  display: block;
+}
+
+.patient-window-switch span {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
 }
 
 .patient-window-close {
+  align-self: stretch;
   width: 34px;
   border-left: 1px solid var(--line);
   color: var(--muted);
@@ -772,6 +807,35 @@ button:disabled {
 .ai-trend-section,
 .lab-section {
   margin-bottom: 16px;
+}
+
+.lab-history-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #f8fafc;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.lab-history-controls label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.lab-history-controls select {
+  width: auto;
+  max-width: 190px;
+  min-height: 34px;
+  padding: 4px 8px;
 }
 
 .lab-matrix-table td:not(:first-child),

@@ -42,9 +42,10 @@ export function parseAdultAdmissionAssessment(html) {
     fieldLine("特殊照護", get("特殊照護")),
   ].filter(Boolean);
 
+  const hasContent = Boolean(get("入院原因") || pastHistoryParts.length || functionalParts.length);
   return {
     source: "護理查詢 > 成人入院評估單",
-    status: "ok",
+    status: hasContent ? "ok" : "empty",
     capturedAt: new Date().toISOString(),
     admissionReason: get("入院原因"),
     pastHistory: pastHistoryParts.join("；"),
