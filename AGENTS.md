@@ -1,5 +1,15 @@
 # Clinical Tool Agent Notes
 
+## Firewall Safety Rule
+
+Do not perform, propose as an automatic implementation step, or enable any firewall-bypass, firewall-opening, firewall-rule-changing, port-forwarding, tunnel, or equivalent network-exposure action. These actions can trigger security alerts.
+
+Before any action that could alter firewall behavior or bypass network protections, explain the exact change and obtain the user's explicit approval. This rule applies even when the action appears necessary for a relay, remote access, or service-recovery task.
+
+At the end of every operational task, explicitly report whether any firewall-related feature, rule, port listener, tunnel, port forwarding, or network-exposure change was designed or performed.
+
+For every new feature or behavior change, assess and report whether it has any firewall or network-security impact, and whether its traffic pattern, process behavior, or system integration could plausibly trigger abnormal-activity alerts in the hospital information environment. Do not implement a change that creates a material new network-exposure or abnormal-traffic risk without first obtaining the user's explicit approval.
+
 ## Shadow Workstation Sync Rule
 
 When changing the LAN workstation UI or data model, update the Netlify shadow workstation in the same change unless the user explicitly scopes the work away from shadow.

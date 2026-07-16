@@ -126,7 +126,18 @@ function normalizePayload(type, payload) {
   }
   if (type === "summary") {
     const query = String(payload.query || "").trim();
-    return query ? { query, ...(crypto ? { crypto } : {}) } : null;
+    const mode = ["quick", "details"].includes(payload.mode) ? payload.mode : "full";
+    const forceRefresh = payload.forceRefresh === true;
+    const validSources = new Set(["orders", "admission", "progress", "discharge", "adult_assessment", "vitals", "labs", "imaging", "surgeries", "pathology", "nursing", "glucose", "intakeOutput"]);
+    const sources = Array.isArray(payload.sources) ? [...new Set(payload.sources.filter((source) => validSources.has(source)))].slice(0, 13) : [];
+    return query ? { query, mode, ...(sources.length ? { sources } : {}), ...(forceRefresh ? { forceRefresh: true } : {}), ...(crypto ? { crypto } : {}) } : null;
+  }
+  if (type === "labs") {
+    const query = String(payload.query || "").trim();
+    const offset = Math.max(0, Math.min(Number.parseInt(payload.offset, 10) || 0, 3650));
+    const startDate = String(payload.startDate || "").trim().slice(0, 64);
+    const endDate = String(payload.endDate || "").trim().slice(0, 64);
+    return query ? { query, offset, ...(startDate ? { startDate } : {}), ...(endDate ? { endDate } : {}), ...(crypto ? { crypto } : {}) } : null;
   }
   if (type === "echo") {
     return { text: String(payload.text || "ping").slice(0, 200), ...(crypto ? { crypto } : {}) };

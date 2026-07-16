@@ -10,6 +10,7 @@ import { resolveCurrentAdmission } from "./parsers/onepage_current_admission.mjs
 import { loginOnepageViaBrowser } from "./parsers/onepage_browser_auth.mjs";
 import { fetchOnepageVitals } from "./parsers/onepage_vitals_parser.mjs";
 import { fetchOnepageClinicalSource } from "./parsers/onepage_clinical_parser.mjs";
+import { fetchOnepageNoteSession } from "./parsers/onepage_note_session_parser.mjs";
 import { fetchNursingCareRecords } from "./parsers/nursing_care_record_parser.mjs";
 import { buildDiagnosisContext } from "./parsers/diagnosis_context_builder.mjs";
 import { fetchBloodSugarInsulin } from "./parsers/nis_glucose_parser.mjs";
@@ -27,10 +28,18 @@ const port = Number(process.env.API_PORT || 8766);
 const sessionCookieName = "owb_session";
 const activeSessions = new Map();
 const patientCache = new Map();
+const admissionCache = new Map();
+const patientLoadPromises = new Map();
 const SESSION_TTL_MS = Number(process.env.WORKBENCH_SESSION_TTL_MS || 8 * 60 * 60 * 1000);
 const PATIENT_CACHE_TTL_MS = Number(process.env.WORKBENCH_PATIENT_CACHE_TTL_MS || 10 * 60 * 1000);
+const ADMISSION_CACHE_TTL_MS = Number(process.env.ADMISSION_CACHE_TTL_MS || 2 * 60 * 1000);
+const ALL_PATIENT_SOURCES = ["orders", "admission", "progress", "discharge", "adult_assessment", "vitals", "labs", "imaging", "surgeries", "pathology", "nursing", "glucose", "intakeOutput"];
+const CORE_DETAIL_SOURCES = ["orders", "admission", "progress", "discharge", "adult_assessment"];
 const allowedOrigin = process.env.ALLOWED_ORIGIN || `http://${host}:${port}`;
 const SOURCE_LABELS = {
+  admission: "入院病摘",
+  progress: "Progress",
+  discharge: "出院病摘",
   labs: "Labs",
   imaging: "影像報告",
   surgeries: "手術紀錄",
@@ -72,6 +81,7 @@ function makePendingPatient(query = "") {
       pastHistory: [],
       admissionReason: null,
       adultAdmissionAssessment: null,
+      noteSession: { admission: null, progress: [], discharge: null },
       sourceExtracts: [
         {
           key: "orders",
@@ -154,7 +164,8 @@ function makeDemoPatient() {
   };
 }
 
-async function buildPatientFromQuery(query, user = null) {
+async function buildPatientFromQuery(query, user = null, options = {}) {
+  const mode = ["quick", "details"].includes(options.mode) ? options.mode : "full";
   const normalizedQuery = String(query || "").trim();
   if (!normalizedQuery || normalizedQuery.length > 64 || /[<>\\]/.test(normalizedQuery)) {
     return { ...makePendingPatient(""), source: "invalid_query", message: "查詢值格式不符，請輸入病歷號、住院序號或床號。", summary: "未執行查詢：查詢值格式不符。" };
@@ -163,7 +174,7 @@ async function buildPatientFromQuery(query, user = null) {
   if (basePatient.source === "demo") return basePatient;
 
   const onepageToken = user?.onepageAuthToken || "";
-  const resolved = await resolveCurrentAdmission({ query, authToken: onepageToken, userId: user?.username || "" });
+  const resolved = await resolveCurrentAdmissionCached(query, user);
   if (resolved.status !== "ok") {
     return {
       ...basePatient,
@@ -196,13 +207,61 @@ async function buildPatientFromQuery(query, user = null) {
 
   const sourceResult = await refreshSources(
     { patientRef: identifiedPatient.chartNo, feeno: admission.feeNo, onepageAuthToken: onepageToken },
-    ["orders", "adult_assessment", "vitals", "labs", "imaging", "surgeries", "pathology", "nursing", "glucose", "intakeOutput"]
+    requestedPatientSources(mode, options.sources)
   );
   const merged = mergeSourceResultIntoPatient(identifiedPatient, sourceResult);
   return {
     ...merged,
+    loadMode: mode,
     aiAssessment: buildRuleBasedAssessment(merged),
   };
+}
+
+function requestedPatientSources(mode, sources) {
+  const requested = Array.isArray(sources) ? sources.filter((source) => ALL_PATIENT_SOURCES.includes(source)) : [];
+  if (requested.length) return [...new Set(requested)];
+  if (mode === "quick") return ["vitals", "labs"];
+  if (mode === "details") return CORE_DETAIL_SOURCES;
+  return ALL_PATIENT_SOURCES;
+}
+
+function admissionCacheKey(user, query) {
+  return `${safeUserId(user?.username || "default")}:${String(query || "").trim().toLowerCase()}`;
+}
+
+async function resolveCurrentAdmissionCached(query, user) {
+  const key = admissionCacheKey(user, query);
+  const cached = admissionCache.get(key);
+  if (cached && Date.now() - cached.cachedAt < ADMISSION_CACHE_TTL_MS) return cached.resolved;
+  const resolved = await resolveCurrentAdmission({ query, authToken: user?.onepageAuthToken || "", userId: user?.username || "" });
+  if (resolved?.status === "ok" && resolved.admission) {
+    const entry = { cachedAt: Date.now(), resolved };
+    admissionCache.set(key, entry);
+    for (const alias of [resolved.admission.chartNo, resolved.admission.bedNo, resolved.admission.feeNo]) {
+      if (alias) admissionCache.set(admissionCacheKey(user, alias), entry);
+    }
+  }
+  return resolved;
+}
+
+export async function buildPatientLabHistory(query, user = null, options = {}) {
+  const normalizedQuery = String(query || "").trim();
+  if (!normalizedQuery || normalizedQuery.length > 64 || /[<>\\]/.test(normalizedQuery)) {
+    throw new Error("查詢值格式不符，請輸入病歷號、住院序號或床號。");
+  }
+  const onepageToken = user?.onepageAuthToken || "";
+  const resolved = await resolveCurrentAdmissionCached(normalizedQuery, user);
+  if (resolved.status !== "ok" || !resolved.admission?.feeNo) {
+    throw new Error(resolved.message || "Onepage 找不到目前住院資料，無法讀取檢驗歷史。");
+  }
+  const chartNo = resolved.admission.chartNo || normalizedQuery;
+  const result = await fetchOnepageClinicalSource({
+    source: "labs",
+    feeno: resolved.admission.feeNo,
+    chartNo,
+    authToken: onepageToken,
+  });
+  return buildLabHistoryWindow(result.rows || [], options);
 }
 
 function mergeSourceResultIntoPatient(patient, result) {
@@ -226,6 +285,7 @@ function mergeSourceResultIntoPatient(patient, result) {
     updatedAt: result.updatedAt || new Date().toISOString(),
     message: result.message || patient.message,
     feeno: result.feeno || patient.feeno || null,
+    loadedSources: result.requestedSources || [],
   };
 
   if (Array.isArray(result.orders)) {
@@ -300,6 +360,13 @@ function mergeSourceResultIntoPatient(patient, result) {
     };
   }
 
+  if (result.noteSession) {
+    merged.clinicalContext = {
+      ...merged.clinicalContext,
+      noteSession: result.noteSession,
+    };
+  }
+
   merged.clinicalContext = buildDiagnosisContext(merged);
 
   const sourceStatuses = new Map((result.sourceResults || []).map((item) => [item.source, item]));
@@ -309,7 +376,21 @@ function mergeSourceResultIntoPatient(patient, result) {
     return {
       ...source,
       status: status.status,
-      lastResult: status.status === "ok" ? `已擷取 ${status.count || 0} 筆${status.endpoint ? ` (${status.endpoint})` : ""}` : compactSourceError(status.message || result.message),
+      lastResult: status.status === "ok"
+        ? (status.empty ? `目前無資料${status.endpoint ? ` (${status.endpoint})` : ""}` : `已擷取 ${status.count || 0} 筆${status.endpoint ? ` (${status.endpoint})` : ""}`)
+        : compactSourceError(status.message || result.message),
+    };
+  });
+  merged.noteSources = (merged.noteSources || []).map((source) => {
+    const key = { "入院病摘": "admission", Progress: "progress", "出院病摘": "discharge" }[source.source];
+    const status = sourceStatuses.get(key);
+    if (!status) return source;
+    return {
+      ...source,
+      status: status.status === "ok" ? (status.empty ? "目前無資料" : "已擷取") : "擷取失敗",
+      usage: status.status === "ok"
+        ? (status.empty ? `目前無資料${status.endpoint ? ` (${status.endpoint})` : ""}` : `已擷取 ${status.count || 0} 筆${status.endpoint ? ` (${status.endpoint})` : ""}`)
+        : compactSourceError(status.message || ""),
     };
   });
   for (const status of result.sourceResults || []) {
@@ -461,25 +542,35 @@ function publicUser(session) {
   };
 }
 
-function patientCacheKey(username, query) {
-  return `${safeUserId(username || "default")}:${String(query || "").trim().toLowerCase()}`;
+function patientCacheKey(username, query, mode = "full") {
+  return `${safeUserId(username || "default")}:${mode}:${String(query || "").trim().toLowerCase()}`;
 }
 
-function getCachedPatient(username, query) {
-  const item = patientCache.get(patientCacheKey(username, query));
+function getCachedPatient(username, query, mode = "full") {
+  const item = patientCache.get(patientCacheKey(username, query, mode));
   if (!item || Date.now() - Number(item.cachedAt || 0) > PATIENT_CACHE_TTL_MS) return null;
   return { ...item.patient, cacheStatus: "memory_cache" };
 }
 
-function setCachedPatient(username, query, patient) {
+function setCachedPatient(username, query, patient, mode = "full") {
   if (!patient || !query || patient.source === "invalid_query") return;
-  patientCache.set(patientCacheKey(username, query), { cachedAt: Date.now(), patient });
+  patientCache.set(patientCacheKey(username, query, mode), { cachedAt: Date.now(), patient });
   if (patient.chartNo && patient.chartNo !== query) {
-    patientCache.set(patientCacheKey(username, patient.chartNo), { cachedAt: Date.now(), patient });
+    patientCache.set(patientCacheKey(username, patient.chartNo, mode), { cachedAt: Date.now(), patient });
   }
   if (patient.bedNo) {
-    patientCache.set(patientCacheKey(username, patient.bedNo), { cachedAt: Date.now(), patient });
+    patientCache.set(patientCacheKey(username, patient.bedNo, mode), { cachedAt: Date.now(), patient });
   }
+}
+
+async function loadPatientOnce(user, query, mode, sources) {
+  const sourceKey = Array.isArray(sources) ? [...new Set(sources)].sort().join(",") : "";
+  const key = `${safeUserId(user?.username || "default")}:${mode}:${String(query || "").trim().toLowerCase()}:${sourceKey}`;
+  const running = patientLoadPromises.get(key);
+  if (running) return running;
+  const task = buildPatientFromQuery(query, user, { mode, sources }).finally(() => patientLoadPromises.delete(key));
+  patientLoadPromises.set(key, task);
+  return task;
 }
 
 async function getCurrentUser(req) {
@@ -600,6 +691,7 @@ async function refreshSources(body, sources) {
   let vitalsResult = null;
   let glucoseResult = null;
   let intakeOutputResult = null;
+  let noteSession = null;
   const clinicalResults = {};
   let profile = null;
 
@@ -624,7 +716,8 @@ async function refreshSources(body, sources) {
           feeno: body.feeno,
           nisBase: process.env.NIS_BASE || "http://10.125.254.46/NIS",
         });
-        markOk("adult_assessment");
+        const hasAssessment = adultAdmissionAssessment?.status === "ok";
+        markOk("adult_assessment", { count: hasAssessment ? 1 : 0, empty: !hasAssessment, endpoint: "NIS AdmissionAssessment" });
       } catch (error) {
         markError("adult_assessment", error);
       }
@@ -656,6 +749,35 @@ async function refreshSources(body, sources) {
         markOk("vitals", { count: vitalsResult.itpr.length });
       } catch (error) {
         markError("vitals", error);
+      }
+    })());
+  }
+
+  if (["admission", "progress", "discharge"].some((source) => sources.includes(source)) && body.feeno) {
+    tasks.push((async () => {
+      try {
+        noteSession = await fetchOnepageNoteSession({
+          feeno: body.feeno,
+          authToken: body.onepageAuthToken || process.env.ONEPAGE_AUTH_TOKEN || "",
+        });
+        for (const source of ["admission", "progress", "discharge"]) {
+          if (!sources.includes(source)) continue;
+          const value = noteSession[source];
+          const count = Array.isArray(value) ? value.length : (value ? 1 : 0);
+          const indexed = Array.isArray(value)
+            ? value.filter((row) => row?.availability === "indexed").length
+            : (value?.availability === "indexed" ? 1 : 0);
+          markOk(source, {
+            count,
+            empty: count === 0,
+            indexed,
+            endpoint: "note.sess / OneRecord",
+          });
+        }
+      } catch (error) {
+        for (const source of ["admission", "progress", "discharge"]) {
+          if (sources.includes(source)) markError(source, error);
+        }
       }
     })());
   }
@@ -751,6 +873,7 @@ async function refreshSources(body, sources) {
     pathology: clinicalResults.pathology?.rows || null,
     nursing: clinicalResults.nursing?.rows || null,
     glucose: glucoseResult?.rows || null,
+    noteSession,
     intakeOutput: intakeOutputResult ? {
       period: intakeOutputResult.period,
       columns: intakeOutputResult.columns || [],
@@ -763,8 +886,8 @@ async function refreshSources(body, sources) {
   };
 }
 
-function buildLabMatrix(labs = []) {
-  const columns = [...new Set(labs.map((row) => row.time).filter(Boolean))].slice(0, 8);
+function buildLabMatrix(labs = [], maxColumns = 8) {
+  const columns = [...new Set(labs.map((row) => row.time).filter(Boolean))].slice(0, maxColumns);
   const items = [...new Set(labs.map((row) => row.item).filter(Boolean))];
   const rows = items.map((item) => {
     const values = {};
@@ -782,6 +905,35 @@ function buildLabMatrix(labs = []) {
     return { item, group: normalizeLabGroup(sample), unit: sample.unit || "", ref: sample.ref || "", values };
   });
   return { columns, rows };
+}
+
+function buildLabHistoryWindow(labs = [], options = {}) {
+  const rows = Array.isArray(labs) ? labs : [];
+  const availableDates = [...new Set(rows.map((row) => row.time).filter(Boolean))];
+  const startIndex = availableDates.indexOf(String(options.startDate || ""));
+  const endIndex = availableDates.indexOf(String(options.endDate || ""));
+  const rangeStart = startIndex === -1 || endIndex === -1 ? 0 : Math.min(startIndex, endIndex);
+  const rangeEnd = startIndex === -1 || endIndex === -1 ? availableDates.length - 1 : Math.max(startIndex, endIndex);
+  const dates = availableDates.slice(rangeStart, rangeEnd + 1);
+  const pageSize = 3;
+  const safeOffset = Math.max(0, Math.min(Number.parseInt(options.offset, 10) || 0, Math.max(0, dates.length - 1)));
+  const columns = dates.slice(safeOffset, safeOffset + pageSize);
+  const selected = rows.filter((row) => columns.includes(row.time));
+  return {
+    labs: selected,
+    labMatrix: buildLabMatrix(selected, pageSize),
+    labHistory: {
+      offset: safeOffset,
+      pageSize,
+      dates: columns,
+      availableDates,
+      startDate: dates.at(-1) || "",
+      endDate: dates[0] || "",
+      totalDates: dates.length,
+      hasNewer: safeOffset > 0,
+      hasOlder: safeOffset + columns.length < dates.length,
+    },
+  };
 }
 
 function normalizeLabGroup(row = {}) {
@@ -914,14 +1066,17 @@ async function routeApi(req, res, url) {
     if (!user) return;
     const body = await readBody(req);
     const query = String(body.query || "").trim();
-    const cached = getCachedPatient(user.username, query);
+    const mode = ["quick", "details"].includes(body.mode) ? body.mode : "full";
+    const sources = Array.isArray(body.sources) ? body.sources.filter((source) => ALL_PATIENT_SOURCES.includes(source)) : [];
+    const cacheMode = sources.length ? `${mode}:${[...sources].sort().join(",")}` : mode;
+    const cached = getCachedPatient(user.username, query, cacheMode);
     if (cached) {
       await appendAudit({ actor: user.username, action: "patient_search_cache", patientRef: query, outcome: cached.source || "unknown", detail: { hasFeeNo: !!cached.feeno } });
       json(res, 200, cached);
       return;
     }
-    const patient = await buildPatientFromQuery(query, user);
-    setCachedPatient(user.username, query, patient);
+    const patient = await loadPatientOnce(user, query, mode, sources);
+    setCachedPatient(user.username, query, patient, cacheMode);
     await rememberRecentPatient(user.username, patient);
     await appendAudit({ actor: user.username, action: "patient_search", patientRef: query, outcome: patient.source || "unknown", detail: { hasFeeNo: !!patient.feeno } });
     json(res, 200, patient);
@@ -933,8 +1088,10 @@ async function routeApi(req, res, url) {
     if (!user) return;
     const body = await readBody(req);
     const query = body.patientRef || body.query || "";
-    const patient = { ...(await buildPatientFromQuery(query, user)), refreshed: true };
-    setCachedPatient(user.username, query, patient);
+    const patient = { ...(await buildPatientFromQuery(query, user, { mode: "full" })), refreshed: true };
+    setCachedPatient(user.username, query, patient, "full");
+    setCachedPatient(user.username, query, patient, "quick");
+    setCachedPatient(user.username, query, patient, "details");
     await rememberRecentPatient(user.username, patient);
     await appendAudit({ actor: user.username, action: "patient_refresh", patientRef: query, outcome: patient.source || "unknown", detail: { hasFeeNo: !!patient.feeno } });
     json(res, 200, patient);

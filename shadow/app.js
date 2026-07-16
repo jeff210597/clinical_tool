@@ -6,6 +6,9 @@ const state = {
   physicianRoster: [],
   physicianRosterDoctor: null,
   openPatients: [],
+  labHistoryLoading: false,
+  detailLoadingKey: "",
+  patientSwitcherExpanded: false,
 };
 
 const el = {
@@ -98,10 +101,10 @@ async function api(path, options = {}) {
     const body = parseJsonBody(options.body);
     const query = body.query || body.patientRef || body.chartNo;
     if (!query) throw new Error("請輸入病歷號、床號或住院序號。");
-    const result = await createShadowRequest("summary", { query });
-    const patient = normalizeShadowPatient(result, query);
-    saveShadowRecent(patient);
-    return patient;
+    return requestShadowPatient(query, {
+      mode: path === "/api/patients/refresh" ? "full" : (["quick", "details"].includes(body.mode) ? body.mode : "full"),
+      forceRefresh: path === "/api/patients/refresh" || body.forceRefresh === true,
+    });
   }
 
   if (path === "/api/physicians/inpatients") {
@@ -155,6 +158,59 @@ async function createShadowRequest(type, payload) {
     body: JSON.stringify({ type, payload }),
   });
   return pollShadowResult(request.id, cryptoState.privateKey);
+}
+
+async function requestShadowPatient(query, options = {}) {
+  const result = await createShadowRequest("summary", {
+    query,
+    mode: ["quick", "details"].includes(options.mode) ? options.mode : "full",
+    ...(Array.isArray(options.sources) && options.sources.length ? { sources: options.sources } : {}),
+    ...(options.forceRefresh ? { forceRefresh: true } : {}),
+  });
+  const patient = normalizeShadowPatient(result, query);
+  saveShadowRecent(patient);
+  return patient;
+}
+
+async function loadShadowLabHistory(offset = 0, range = {}) {
+  if (!state.currentPatient || state.labHistoryLoading) return;
+  state.labHistoryLoading = true;
+  try {
+    const query = state.currentPatient.patientRef || state.currentPatient.chartNo;
+    const history = await createShadowRequest("labs", { query, offset, startDate: range.startDate || "", endDate: range.endDate || "" });
+    Object.assign(state.currentPatient, history);
+    state.currentPatient.labView = "matrix";
+    renderPatient(state.currentPatient, { store: false });
+    switchTab("labs");
+  } finally {
+    state.labHistoryLoading = false;
+  }
+}
+
+async function loadShadowAllLabs() {
+  if (!state.currentPatient || state.labHistoryLoading) return;
+  state.labHistoryLoading = true;
+  try {
+    const query = state.currentPatient.patientRef || state.currentPatient.chartNo;
+    const range = state.currentPatient.labHistory || {};
+    const rows = [];
+    let offset = 0;
+    let firstPage = null;
+    let page = null;
+    do {
+      page = await createShadowRequest("labs", { query, offset, startDate: range.startDate || "", endDate: range.endDate || "" });
+      if (!firstPage) firstPage = page;
+      rows.push(...(page.labs || []));
+      offset += page.labHistory?.pageSize || 3;
+      el.serviceStatus.textContent = `載入全部 Lab：${Math.min(offset, page.labHistory?.totalDates || offset)} / ${page.labHistory?.totalDates || offset}`;
+    } while (page.labHistory?.hasOlder);
+    const unique = new Map(rows.map((row) => [[row.time, row.item, row.latest, row.unit].join("|"), row]));
+    Object.assign(state.currentPatient, firstPage || {}, { labHistoryAll: [...unique.values()], labView: "all" });
+    renderPatient(state.currentPatient, { store: false });
+    switchTab("labs");
+  } finally {
+    state.labHistoryLoading = false;
+  }
 }
 
 async function pollShadowResult(id, privateKey = null) {
@@ -371,6 +427,10 @@ function patientWindowLabel(patient = {}) {
   return [patient.displayName || patient.chartNo || patient.patientRef || "未命名", patient.bedNo || ""].filter(Boolean).join(" · ");
 }
 
+function patientWindowDetails(patient = {}) {
+  return [patient.chartNo || patient.patientRef || "病歷號待讀取", patient.bedNo ? `床號 ${patient.bedNo}` : "床號待讀取"].join(" · ");
+}
+
 function admissionPeriodLabel(patient = {}) {
   const period = patient.admissionPeriod || {};
   const start = shortDateLabel(period.startDate);
@@ -406,15 +466,27 @@ function renderPatientWindows() {
   }
   const currentKey = patientKey(state.currentPatient);
   el.patientWindowTabs.classList.remove("is-hidden");
-  el.patientWindowTabs.innerHTML = state.openPatients.map((patient) => {
+  const expanded = state.patientSwitcherExpanded;
+  el.patientWindowTabs.innerHTML = `
+    <div class="patient-window-toolbar">
+      <span>已開啟病人 ${state.openPatients.length} 位</span>
+      <button class="patient-window-toggle" type="button" data-toggle-patient-windows aria-expanded="${expanded}">${expanded ? "收合清單" : "展開清單"}</button>
+    </div>
+    <div class="patient-window-grid${expanded ? " is-expanded" : ""}"${expanded ? "" : " hidden"}>
+      ${state.openPatients.map((patient) => {
     const key = patientKey(patient);
     return `
       <div class="patient-window-tab ${key === currentKey ? "is-active" : ""}" data-patient-key="${escapeHtml(key)}">
-        <button class="patient-window-switch" type="button" data-patient-key="${escapeHtml(key)}">${escapeHtml(patientWindowLabel(patient))}</button>
+        <button class="patient-window-switch" type="button" data-patient-key="${escapeHtml(key)}">
+          <strong>${escapeHtml(patientWindowLabel(patient))}</strong>
+          <span>${escapeHtml(patientWindowDetails(patient))}</span>
+        </button>
         <button class="patient-window-close" type="button" data-close-patient="${escapeHtml(key)}" title="關閉此病人">×</button>
       </div>
     `;
-  }).join("");
+      }).join("")}
+    </div>
+  `;
 }
 
 function clearPatientView(message = "請先輸入影子工作站 PIN。") {
@@ -513,18 +585,23 @@ function roundingSummary(patient) {
 
 function buildCoverage(patient) {
   const has = (value) => Array.isArray(value) ? value.length > 0 : !!value;
+  const tprRows = patientTprRows(patient);
   const assessment = patient.clinicalContext?.adultAdmissionAssessment;
   return [
     { label: "病人識別", value: patient.displayName && patient.displayName !== "待由 Onepage 識別" ? "已確認" : "待確認", detail: patient.bedNo ? patient.bedNo : "床號尚未讀取", status: patient.displayName && patient.displayName !== "待由 Onepage 識別" ? "ok" : "warn" },
     { label: "住院醫囑", value: has(patient.orders) ? `${patient.orders.length} 筆` : "尚未擷取", detail: has(patient.orders) ? "請至醫囑分頁核對 active / DC" : "需要 Onepage / NIS 資料", status: has(patient.orders) ? "ok" : "missing" },
     { label: "入院評估", value: assessment ? "已擷取" : "尚未擷取", detail: assessment?.admissionReason || "入院原因與病史", status: assessment ? "ok" : "missing" },
-    { label: "TPR", value: has(patient.tpr) ? `${patient.tpr.length} 筆` : "尚未擷取", detail: has(patient.tpr) ? "已依時間由新到舊排列" : "不可視為正常", status: has(patient.tpr) ? "ok" : "missing" },
+    { label: "TPR", value: has(tprRows) ? `${tprRows.length} 筆` : "尚未擷取", detail: has(tprRows) ? "已依時間由新到舊排列" : "不可視為正常", status: has(tprRows) ? "ok" : "missing" },
     { label: "Labs", value: has(patient.labs) ? `${patient.labs.length} 筆` : "尚未擷取", detail: has(patient.labs) ? latestLine(patient.labs, (row) => `${row.item || "Lab"} ${row.latest || ""}`) : "尚未讀取檢驗結果", status: has(patient.labs) ? "ok" : "missing" },
     { label: "影像", value: has(patient.imaging) ? `${patient.imaging.length} 筆` : "尚未擷取", detail: has(patient.imaging) ? latestLine(patient.imaging, (row) => `${row.date || ""} ${row.type || "影像"}`) : "尚未讀取報告結果", status: has(patient.imaging) ? "ok" : "missing" },
     { label: "手術", value: has(patient.surgeries) ? `${patient.surgeries.length} 筆` : "尚未擷取", detail: has(patient.surgeries) ? latestLine(patient.surgeries, (row) => row.procedure || row.note || "手術紀錄") : "尚未讀取手術紀錄", status: has(patient.surgeries) ? "ok" : "missing" },
     { label: "病理", value: has(patient.pathology) ? `${patient.pathology.length} 筆` : "尚未擷取", detail: has(patient.pathology) ? latestLine(patient.pathology, (row) => `${row.date || ""} ${row.type || "病理"}`) : "尚未讀取病理報告", status: has(patient.pathology) ? "ok" : "missing" },
     { label: "護理", value: has(patient.nursing) ? `${patient.nursing.length} 筆` : "尚未擷取", detail: has(patient.nursing) ? latestLine(patient.nursing, (row) => row.note || row.type || "護理紀錄") : "尚未讀取護理紀錄", status: has(patient.nursing) ? "ok" : "missing" },
   ];
+}
+
+function patientTprRows(patient = {}) {
+  return [patient.tpr, patient.vitals, patient.itpr].find((rows) => Array.isArray(rows) && rows.length) || [];
 }
 
 function latestLine(rows, formatter) {
@@ -592,7 +669,7 @@ function summaryImaging(rows, options = {}) {
 }
 
 function summaryClinicalTables(patient) {
-  const tprRows = selectSummaryTprRows(patient.tpr || []);
+  const tprRows = selectSummaryTprRows(patientTprRows(patient));
   const labMatrix = selectSummaryLabMatrix(patient.labs || []);
   return `
     ${admissionStayBanner(patient)}
@@ -787,10 +864,13 @@ function roundingChecklist(patient, coverage) {
 }
 
 function renderLabs(patient) {
-  const matrix = patient.labMatrix;
+  const history = patient.labHistory;
+  if (patient.labView === "all" && history) return `${renderLabHistoryControls(history)}${renderAllLabs(patient.labHistoryAll || [])}`;
+  const matrix = history?.labMatrix || patient.labMatrix;
+  const controls = history ? renderLabHistoryControls(history) : `<div class="lab-history-controls"><span>完整檢驗歷史可分頁查看</span><div class="actions"><button type="button" class="lab-history-load">載入完整歷史</button></div></div>`;
   if (matrix?.columns?.length && matrix?.rows?.length) {
     const groups = groupLabMatrixRows(matrix.rows);
-    return Object.entries(groups).map(([group, rows]) => `
+    return `${controls}${Object.entries(groups).map(([group, rows]) => `
       <section class="lab-section">
         <h3>${escapeHtml(labGroupLabel(group))}</h3>
         ${table(
@@ -799,11 +879,11 @@ function renderLabs(patient) {
           "lab-matrix-table"
         )}
       </section>
-    `).join("");
+    `).join("")}`;
   }
 
   const groups = groupLabRows(patient.labs || []);
-  return Object.entries(groups).map(([group, rows]) => `
+  return `${controls}${Object.entries(groups).map(([group, rows]) => `
     <section class="lab-section">
       <h3>${escapeHtml(labGroupLabel(group))}</h3>
       ${table(
@@ -819,7 +899,36 @@ function renderLabs(patient) {
         "lab-list-table"
       )}
     </section>
-  `).join("") || missingDataState();
+  `).join("") || missingDataState()}`;
+}
+
+function renderLabHistoryControls(history) {
+  if (!history.totalDates) return "";
+  const start = history.offset + 1;
+  const end = history.offset + (history.dates?.length || 0);
+  const startOptions = (history.availableDates || []).map((date) => `<option value="${escapeHtml(date)}" ${date === history.startDate ? "selected" : ""}>${escapeHtml(date)}</option>`).join("");
+  const endOptions = (history.availableDates || []).map((date) => `<option value="${escapeHtml(date)}" ${date === history.endDate ? "selected" : ""}>${escapeHtml(date)}</option>`).join("");
+  return `<div class="lab-history-controls">
+    <span>檢驗日期 ${start}-${end} / ${history.totalDates}</span>
+    <label>起日<select class="lab-range-start">${startOptions}</select></label>
+    <label>迄日<select class="lab-range-end">${endOptions}</select></label>
+    <div class="actions">
+      <button type="button" class="lab-range-apply">查詢</button>
+      <button type="button" class="lab-history-all">顯示全部 Lab 數值</button>
+      <button type="button" class="lab-history-page" data-lab-history-offset="${Math.max(0, history.offset - 3)}" ${history.hasNewer ? "" : "disabled"}>更新</button>
+      <button type="button" class="lab-history-page" data-lab-history-offset="${history.offset + 3}" ${history.hasOlder ? "" : "disabled"}>更早</button>
+    </div>
+  </div>`;
+}
+
+function renderAllLabs(rows) {
+  const sorted = [...rows].sort((a, b) => parseDisplayTime(b.time) - parseDisplayTime(a.time) || String(a.item || "").localeCompare(String(b.item || ""), "zh-Hant"));
+  return `<section class="lab-section"><h3>全部 Lab 數值</h3>${searchableTable(
+    ["日期時間", "項目", "數值", "單位", "參考值"],
+    sorted.map((row) => [row.time || "", row.item || "", labValueHtml(row), row.unit || "", row.ref || ""]),
+    "lab-all-table",
+    "搜尋日期、項目或數值"
+  )}</section>`;
 }
 
 function groupLabMatrixRows(rows = []) {
@@ -1135,6 +1244,7 @@ function clinicalContext(context, sources = []) {
       <section><h3>過去病史</h3>${sourceList(context.pastHistory)}</section>
       <section class="wide"><h3>住院原因摘要</h3>${context.admissionReason ? records([{ title: context.admissionReason.source, body: context.admissionReason.text }]) : `<div class="empty-state">尚未擷取。</div>`}</section>
       <section class="wide"><h3>成人入院評估單</h3>${adultAssessment(context.adultAdmissionAssessment)}</section>
+      <section class="wide"><h3>病摘與 Progress</h3>${noteSessionRecords(context.noteSession)}</section>
       <section class="wide"><h3>來源擷取工作台</h3>${sourceWorkbench(context.sourceExtracts || [])}</section>
       <section class="wide"><h3>資料來源狀態</h3>${table(["來源", "狀態", "用途"], (sources || []).map((row) => [row.source, row.status, row.usage]))}</section>
     </div>
@@ -1162,11 +1272,26 @@ function integratedDiagnosisContext(context, sources = []) {
         <h3>來源證據</h3>
         ${evidenceTable(integrated.evidence || [])}
         <h3>成人入院評估單</h3>${adultAssessment(context.adultAdmissionAssessment)}
+        <h3>病摘與 Progress</h3>${noteSessionRecords(context.noteSession)}
         <h3>來源擷取工作台</h3>${sourceWorkbench(context.sourceExtracts || [])}
         <h3>資料來源狀態</h3>${table(["來源", "狀態", "用途"], (sources || []).map((row) => [row.source, row.status, row.usage]))}
       </details>
     </div>
   `;
+}
+
+function noteSessionRecords(notes = {}) {
+  const sections = [
+    ["入院病摘", notes.admission ? [notes.admission] : []],
+    ["Progress", Array.isArray(notes.progress) ? notes.progress : []],
+    ["出院病摘", notes.discharge ? [notes.discharge] : []],
+  ];
+  return `<div class="record-list">${sections.map(([label, rows]) => `
+    <details class="diagnosis-detail" ${label === "Progress" ? "open" : ""}>
+      <summary>${escapeHtml(label)}${rows.length ? `（${rows.length} 筆）` : "（目前無資料）"}</summary>
+      ${rows.length ? rows.map((row) => `<article class="record-item"><strong>${escapeHtml([row.date, row.title, row.author].filter(Boolean).join(" · ") || label)}</strong><pre>${escapeHtml(row.content || row.referenceText || "")}</pre></article>`).join("") : ""}
+    </details>
+  `).join("")}</div>`;
 }
 
 function diagnosisBulletList(items, options = {}) {
@@ -1278,7 +1403,8 @@ function bulletList(items = []) {
 function ioSummary(io) {
   if (!io) return "";
   if (Array.isArray(io.totals)) {
-    const latest = io.totals.at(-1) || io.totals[0] || {};
+    const latestDate = sortIoColumns(io.columns || [])[0]?.date;
+    const latest = io.totals.find((row) => row.date === latestDate) || io.totals.at(-1) || io.totals[0] || {};
     return `
       <div class="io-summary">
         <div><span>期間</span><strong>${escapeHtml(io.period || "尚未擷取")}</strong></div>
@@ -1300,7 +1426,7 @@ function ioSummary(io) {
 
 function ioPanel(io) {
   if (!io) return `<div class="empty-state">尚未擷取輸入輸出資料。</div>`;
-  const columns = io.columns || [];
+  const columns = sortIoColumns(io.columns || []);
   if (columns.length) {
     return `
       ${ioSummary(io)}
@@ -1373,11 +1499,12 @@ function renderGlucose(rows) {
 }
 
 function ioWideTable(columns, records) {
+  const sortedColumns = sortIoColumns(columns || []);
   return table(
-    ["項目", ...columns.map((column) => column.date)],
+    ["項目", ...sortedColumns.map((column) => column.date)],
     records.map((record) => [
       record.item,
-      ...columns.map((column) => {
+      ...sortedColumns.map((column) => {
         const found = (record.values || []).find((value) => value.date === column.date);
         if (!found) return "";
         const detail = found.detail ? `\n${found.detail}` : "";
@@ -1386,6 +1513,22 @@ function ioWideTable(columns, records) {
     ]),
     "io-wide-table"
   );
+}
+
+function sortIoColumns(columns = []) {
+  return columns
+    .map((column, index) => ({ column, index, time: ioDateSortValue(column.date) }))
+    .sort((a, b) => b.time - a.time || a.index - b.index)
+    .map((item) => item.column);
+}
+
+function ioDateSortValue(value) {
+  const text = String(value || "").trim();
+  const roc = text.match(/(?:民國\s*)?(\d{2,3})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日?/);
+  if (roc) return Date.UTC(Number(roc[1]) + 1911, Number(roc[2]) - 1, Number(roc[3]));
+  const gregorian = text.match(/(\d{4})[/-](\d{1,2})[/-](\d{1,2})/);
+  if (gregorian) return Date.UTC(Number(gregorian[1]), Number(gregorian[2]) - 1, Number(gregorian[3]));
+  return parseDisplayTime(text);
 }
 
 function table(headers, rows = [], extraClass = "") {
@@ -1455,10 +1598,44 @@ async function loadPatient(query, options = {}) {
     el.patientMeta.textContent = "正在查詢，若最近已擷取會直接使用快取...";
     el.refreshPatient.disabled = true;
   }
-  const patient = await api("/api/patients/search", { method: "POST", body: JSON.stringify({ query }) });
+  const patient = await api("/api/patients/search", { method: "POST", body: JSON.stringify({ query, mode: "quick" }) });
   renderPatient(patient);
+  if (!silent) {
+    el.patientMeta.textContent = "基本資料已顯示，詳細資料正在背景載入…";
+    void loadShadowPatientDetails(query, patientKey(patient));
+  }
   if (updateRecent) loadRecent().catch(() => null);
   return patient;
+}
+
+async function loadShadowPatientDetails(query, expectedKey, sources = ["orders", "admission", "progress", "discharge", "adult_assessment"]) {
+  const loadKey = `${expectedKey}:${[...sources].sort().join(",")}`;
+  if (state.detailLoadingKey === loadKey) return;
+  state.detailLoadingKey = loadKey;
+  try {
+    const patient = await requestShadowPatient(query, { mode: "details", sources });
+    if (patientKey(state.currentPatient) !== expectedKey) return;
+    mergePatientLoad(patient, state.currentPatient);
+    renderPatient(patient);
+    switchTab(state.currentTab);
+    el.patientMeta.textContent = patient.cacheStatus === "relay_cache" ? "詳細資料已由短期快取載入" : "詳細資料已更新";
+  } catch {
+    if (patientKey(state.currentPatient) === expectedKey) el.patientMeta.textContent = "基本資料已顯示；詳細資料暫時無法更新";
+  } finally {
+    if (state.detailLoadingKey === loadKey) state.detailLoadingKey = "";
+  }
+}
+
+function mergePatientLoad(patient, previous = {}) {
+  const collections = ["labs", "orders", "imaging", "surgeries", "pathology", "nursing", "glucose", "tpr", "vitals", "itpr"];
+  for (const key of collections) {
+    if ((!Array.isArray(patient[key]) || !patient[key].length) && Array.isArray(previous[key]) && previous[key].length) patient[key] = previous[key];
+  }
+  if (!patient.intakeOutput?.input?.length && previous.intakeOutput) patient.intakeOutput = previous.intakeOutput;
+  patient.labMatrix ||= previous.labMatrix;
+  patient.labHistory ||= previous.labHistory;
+  patient.clinicalContext = { ...previous.clinicalContext, ...patient.clinicalContext };
+  patient.loadedSources = [...new Set([...(previous.loadedSources || []), ...(patient.loadedSources || [])])];
 }
 
 async function openPhysicianRosterPatients() {
@@ -1580,6 +1757,16 @@ function switchTab(name) {
   state.currentTab = name;
   for (const tab of el.tabs) tab.classList.toggle("is-active", tab.dataset.tab === name);
   for (const panel of el.panels) panel.classList.toggle("is-hidden", panel.dataset.panel !== name);
+  const tabSources = { imaging: ["imaging"], surgery: ["surgeries"], pathology: ["pathology"], io: ["intakeOutput"], nursing: ["nursing"], glucose: ["glucose"] };
+  const sources = tabSources[name] || [];
+  if (sources.length && state.currentPatient && !sources.every((source) => state.currentPatient.loadedSources?.includes(source))) {
+    const query = state.currentPatient.patientRef || state.currentPatient.chartNo;
+    el.patientMeta.textContent = `正在載入${name}資料…`;
+    void loadShadowPatientDetails(query, patientKey(state.currentPatient), sources);
+  }
+  if (name === "labs" && state.currentPatient && !state.currentPatient.labHistory && !state.labHistoryLoading) {
+    loadShadowLabHistory(0).catch((error) => { el.serviceStatus.textContent = error.message || "無法載入完整檢驗歷史"; });
+  }
   if (name === "orders" || name === "nursing") requestAnimationFrame(() => scrollPanelToLatest(name));
 }
 
@@ -1608,6 +1795,31 @@ document.addEventListener("input", (event) => {
 });
 
 document.addEventListener("click", async (event) => {
+  if (event.target?.dataset?.togglePatientWindows !== undefined) {
+    state.patientSwitcherExpanded = !state.patientSwitcherExpanded;
+    renderPatientWindows();
+    return;
+  }
+  if (event.target?.classList?.contains("lab-history-load")) {
+    await loadShadowLabHistory(0).catch((error) => { el.serviceStatus.textContent = error.message || "無法載入完整檢驗歷史"; });
+    return;
+  }
+  if (event.target?.classList?.contains("lab-range-apply")) {
+    const startDate = document.querySelector(".lab-range-start")?.value || "";
+    const endDate = document.querySelector(".lab-range-end")?.value || "";
+    await loadShadowLabHistory(0, { startDate, endDate }).catch((error) => { el.serviceStatus.textContent = error.message || "無法載入指定檢驗範圍"; });
+    return;
+  }
+  if (event.target?.classList?.contains("lab-history-all")) {
+    await loadShadowAllLabs().catch((error) => { el.serviceStatus.textContent = error.message || "無法載入全部 Lab 數值"; });
+    return;
+  }
+  const labHistoryOffset = event.target?.dataset?.labHistoryOffset;
+  if (labHistoryOffset !== undefined) {
+    const history = state.currentPatient?.labHistory || {};
+    await loadShadowLabHistory(Number(labHistoryOffset), history).catch((error) => { el.serviceStatus.textContent = error.message || "無法載入完整檢驗歷史"; });
+    return;
+  }
   const switchKey = event.target?.dataset?.patientKey;
   if (switchKey && event.target.classList.contains("patient-window-switch")) {
     const patient = state.openPatients.find((item) => patientKey(item) === switchKey);

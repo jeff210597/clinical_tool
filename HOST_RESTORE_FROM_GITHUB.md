@@ -13,44 +13,37 @@ cd clinical_tool
 
 Create `app/.env` from `app/.env.example`.
 
-Required for Discord relay:
+Required for the current Cloudflare shadow workstation:
 
 ```env
-DISCORD_BOT_TOKEN=
-DISCORD_CLIENT_ID=
-DISCORD_GUILD_ID=
-DISCORD_CHANNEL_ID=
-DISCORD_ALLOWED_USER_IDS=
-RELAY_RESPONSE_MODE=ephemeral
-```
-
-Required for shadow workstation:
-
-```env
-SHADOW_API_BASE=https://clinical-tool-shadow.netlify.app
-SHADOW_RELAY_KEY=
-SHADOW_PIN=
-SHADOW_POLL_INTERVAL_MS=3000
 CF_SHADOW_API_BASE=https://data-viewer.workspace4829.workers.dev
 CF_SHADOW_RELAY_KEY=
 CF_SHADOW_PIN=
-CF_SHADOW_POLL_INTERVAL_MS=3000
+CF_SHADOW_POLL_INTERVAL_MS=1500
 ```
+
+`CF_SHADOW_POLL_INTERVAL_MS=1500` is the current approved setting. It only
+controls outbound HTTPS mailbox polling to Cloudflare and does not increase
+Onepage/NIS fetches unless a user requests new data.
+
+The Netlify and Discord relay settings in `app/.env.example` are optional
+legacy fallbacks; they are not required for the current workstation.
 
 Values that must be provided manually:
 
-- Discord bot token
-- Discord client/application id
-- Discord guild/server id
-- Discord channel id
-- Allowed Discord user ids
-- Shadow relay key
-- Shadow PIN
-- Netlify site URL, if it changes
-- Netlify personal access token, only when redeploying from the new host
+- Cloudflare Worker relay key and PIN
 - Cloudflare API token and account id, only when redeploying the Cloudflare Worker from the new host
 - Cloudflare Worker URL, relay key, and PIN
 - GitHub token, only when pushing updates from the new host
+
+Node.js 20 or newer is required. After cloning, restore dependencies with:
+
+```powershell
+npm ci
+Push-Location app
+npm ci
+Pop-Location
+```
 
 Do not commit these files:
 
@@ -105,34 +98,6 @@ is denied, it falls back to a per-user Startup shortcut:
 %APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\Clinical Tool Workbench Watchdog.lnk
 ```
 
-## Start Discord Relay
-
-```powershell
-.\Start_Discord_Relay_Agent.cmd
-```
-
-Test in Discord:
-
-```text
-/relay-health
-/ward doctor_id:09432
-/summary query:01585357
-```
-
-## Start Shadow Relay
-
-```powershell
-.\Start_Shadow_Relay_Agent.cmd
-```
-
-Netlify shadow workstation:
-
-```text
-https://clinical-tool-shadow.netlify.app
-```
-
-Enter `SHADOW_PIN` in the web page, then query a physician id or patient chart number.
-
 ## Start Cloudflare Shadow Relay
 
 ```powershell
@@ -146,6 +111,16 @@ https://data-viewer.workspace4829.workers.dev
 ```
 
 Enter `CF_SHADOW_PIN` in the web page, then query a physician id or patient chart number. This path does not require Netlify.
+
+To keep the Cloudflare relay in the background and recover it automatically
+after sign-in or a process stop, run once:
+
+```powershell
+.\scripts\Install_Cloudflare_Relay_Autostart.ps1
+```
+
+This installer creates a per-user background watchdog. It does not create an
+inbound listener, modify firewall rules, or create a tunnel.
 
 ## Redeploy Netlify Shadow Site
 

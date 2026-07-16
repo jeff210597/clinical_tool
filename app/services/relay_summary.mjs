@@ -2,13 +2,16 @@ import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildPatientFromQuery } from "../server.mjs";
+import { buildPatientFromQuery, buildPatientLabHistory } from "../server.mjs";
 import { fetchPhysicianInpatients } from "../parsers/onepage_physician_roster.mjs";
 
 const appDir = fileURLToPath(new URL("../", import.meta.url));
 const localDir = join(appDir, ".local");
 const sessionStorePath = join(localDir, "sessions.json");
 const relayAuditPath = join(localDir, "relay_audit.ndjson");
+const relayPatientCache = new Map();
+const relayPatientPromises = new Map();
+const RELAY_PATIENT_CACHE_TTL_MS = 5 * 60 * 1000;
 
 const LAB_PRIORITY = [
   "WBC",
@@ -56,11 +59,36 @@ export async function physicianRosterSummary(doctorId, user = null) {
   return { text: lines.join("\n"), roster };
 }
 
-export async function patientRoundingSummary(query, user = null) {
+export async function patientRoundingSummary(query, user = null, options = {}) {
   const relayUser = user || await getRelayUser();
-  const patient = await buildPatientFromQuery(query, relayUser);
-  await appendRelayAudit({ actor: relayUser.username, action: "summary", patientRefHash: hashPatientRef(query), outcome: patient.source });
-  return { text: formatPatientSummary(patient), patient };
+  const mode = ["quick", "details"].includes(options.mode) ? options.mode : "full";
+  const sources = Array.isArray(options.sources) ? [...new Set(options.sources)].sort() : [];
+  const sourceKey = sources.join(",");
+  const cacheKey = `${relayUser.username}:${mode}:${sourceKey}:${String(query || "").trim().toLowerCase()}`;
+  const cached = relayPatientCache.get(cacheKey);
+  if (!options.forceRefresh && cached && Date.now() - cached.cachedAt < RELAY_PATIENT_CACHE_TTL_MS) {
+    await appendRelayAudit({ actor: relayUser.username, action: "summary_cache", patientRefHash: hashPatientRef(query), outcome: cached.patient.source });
+    return { text: formatPatientSummary(cached.patient), patient: { ...cached.patient, cacheStatus: "relay_cache" } };
+  }
+  const running = relayPatientPromises.get(cacheKey);
+  const patient = running || buildPatientFromQuery(query, relayUser, { mode, sources })
+    .finally(() => relayPatientPromises.delete(cacheKey));
+  if (!running) relayPatientPromises.set(cacheKey, patient);
+  const resolvedPatient = await patient;
+  relayPatientCache.set(cacheKey, { cachedAt: Date.now(), patient: resolvedPatient });
+  if (mode === "full" && !sourceKey) {
+    relayPatientCache.set(`${relayUser.username}:quick::${String(query || "").trim().toLowerCase()}`, { cachedAt: Date.now(), patient: resolvedPatient });
+    relayPatientCache.set(`${relayUser.username}:details::${String(query || "").trim().toLowerCase()}`, { cachedAt: Date.now(), patient: resolvedPatient });
+  }
+  await appendRelayAudit({ actor: relayUser.username, action: "summary", patientRefHash: hashPatientRef(query), outcome: resolvedPatient.source });
+  return { text: formatPatientSummary(resolvedPatient), patient: resolvedPatient };
+}
+
+export async function patientLabHistory(query, options = {}, user = null) {
+  const relayUser = user || await getRelayUser();
+  const history = await buildPatientLabHistory(query, relayUser, options);
+  await appendRelayAudit({ actor: relayUser.username, action: "labs", patientRefHash: hashPatientRef(query), outcome: "ok" });
+  return history;
 }
 
 export function hashPatientRef(value) {

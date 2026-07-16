@@ -84,7 +84,7 @@ Add to `app/.env`:
 ```text
 CF_SHADOW_API_BASE=https://<your-worker>.<account>.workers.dev
 CF_SHADOW_RELAY_KEY=<same as Worker secret>
-CF_SHADOW_POLL_INTERVAL_MS=3000
+CF_SHADOW_POLL_INTERVAL_MS=1500
 ```
 
 Run the hospital-side outbound relay:
@@ -100,6 +100,14 @@ $node="$env:USERPROFILE\.cache\codex-runtimes\codex-primary-runtime\dependencies
 & $node app\relay\cloudflare_poll_agent.mjs --check-config
 & $node app\relay\cloudflare_poll_agent.mjs
 ```
+
+To keep the relay running after a process stop or the next sign-in, install its per-user watchdog:
+
+```powershell
+.\scripts\Install_Cloudflare_Relay_Autostart.ps1
+```
+
+The watchdog checks once per minute and starts the relay only when it is absent. It uses outbound HTTPS polling only; it does not open ports, modify firewall rules, or create a tunnel.
 
 For connection-only testing, run `cloudflare_poll_agent.mjs --echo-only`. Remove echo-only mode for real workstation queries.
 

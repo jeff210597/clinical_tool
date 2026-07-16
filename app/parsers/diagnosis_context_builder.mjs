@@ -91,6 +91,41 @@ export function buildDiagnosisContext(patient = {}) {
     evidence,
   });
 
+  // Onepage's admission summary and latest progress note are the clinician
+  // authored source of truth for this admission.  They supplement NIS rather
+  // than being inferred from orders, imaging, or procedures.
+  const noteSession = previous.noteSession || {};
+  const admissionNote = noteSession.admission;
+  const progressNotes = Array.isArray(noteSession.progress) ? noteSession.progress : [];
+  const dischargeNote = noteSession.discharge;
+  addEvidenceFromText({
+    text: cleanText(admissionNote?.content || ""),
+    source: "Onepage 入院病摘",
+    date: admissionNote?.date || "",
+    diagnosisMap,
+    historyMap,
+    evidence,
+    primary: true,
+  });
+  for (const note of progressNotes.slice(0, 3)) {
+    addEvidenceFromText({
+      text: cleanText(note?.content || ""),
+      source: "Onepage Progress",
+      date: note?.date || "",
+      diagnosisMap,
+      historyMap,
+      evidence,
+      primary: true,
+    });
+  }
+  addHistoryFromText({
+    text: cleanText(dischargeNote?.content || ""),
+    source: "Onepage 出院病摘",
+    date: dischargeNote?.date || "",
+    historyMap,
+    evidence,
+  });
+
   addSupplementalRows({
     rows: patient.surgeries || [],
     source: "手術紀錄",
@@ -130,7 +165,7 @@ export function buildDiagnosisContext(patient = {}) {
   const diagnosisKeys = new Set(currentDiagnoses.map((item) => item.key));
   const pastHistory = [...historyMap.values()].filter((item) => !diagnosisKeys.has(item.key));
   const aiIntegrated = {
-    mode: "adult_assessment_admission_reason_primary",
+    mode: "onepage_note_and_adult_assessment_primary",
     explicitDiagnoses: currentDiagnoses,
     importantHistory: pastHistory,
     evidence,
