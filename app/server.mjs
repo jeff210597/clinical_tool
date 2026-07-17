@@ -1,9 +1,10 @@
 ﻿import { createServer } from "node:http";
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { createHash, randomBytes } from "node:crypto";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildRuleBasedAssessment } from "./parsers/ai_assessment_stub.mjs";
 import { fetchAdultAdmissionAssessment } from "./parsers/adult_assessment_parser.mjs";
 import { fetchInpatientOrders } from "./parsers/orders_parser.mjs";
 import { resolveCurrentAdmission } from "./parsers/onepage_current_admission.mjs";
@@ -21,20 +22,27 @@ const __dirname = fileURLToPath(new URL(".", import.meta.url));
 const publicDir = join(__dirname, "public");
 const localDir = join(__dirname, ".local");
 const auditLogPath = join(localDir, "audit.ndjson");
+const onepageRefreshAuditPath = join(localDir, "onepage_refresh_audit.ndjson");
 const sessionStorePath = join(localDir, "sessions.json");
 const recentPatientsPath = join(localDir, "recent_patients.json");
 const host = process.env.API_HOST || "127.0.0.1";
 const port = Number(process.env.API_PORT || 8766);
 const sessionCookieName = "owb_session";
 const activeSessions = new Map();
+const execFileAsync = promisify(execFile);
+const RELAY_LOGIN_COOLDOWN_MS = 10 * 60 * 1000;
+let relayLoginCooldownUntil = 0;
 const patientCache = new Map();
 const admissionCache = new Map();
 const patientLoadPromises = new Map();
 const SESSION_TTL_MS = Number(process.env.WORKBENCH_SESSION_TTL_MS || 8 * 60 * 60 * 1000);
 const PATIENT_CACHE_TTL_MS = Number(process.env.WORKBENCH_PATIENT_CACHE_TTL_MS || 10 * 60 * 1000);
 const ADMISSION_CACHE_TTL_MS = Number(process.env.ADMISSION_CACHE_TTL_MS || 2 * 60 * 1000);
+const PATIENT_CACHE_VERSION = "context-v8-surgery-episode-postop-diagnosis";
 const ALL_PATIENT_SOURCES = ["orders", "admission", "progress", "discharge", "adult_assessment", "vitals", "labs", "imaging", "surgeries", "pathology", "nursing", "glucose", "intakeOutput"];
-const CORE_DETAIL_SOURCES = ["orders", "admission", "progress", "discharge", "adult_assessment"];
+// These sources are read in the existing background details request so a
+// diagnosis is available without requiring a separate manual refresh.
+const CORE_DETAIL_SOURCES = ["orders", "admission", "progress", "discharge", "adult_assessment", "imaging", "surgeries", "pathology", "nursing"];
 const allowedOrigin = process.env.ALLOWED_ORIGIN || `http://${host}:${port}`;
 const SOURCE_LABELS = {
   admission: "入院病摘",
@@ -93,23 +101,23 @@ function makePendingPatient(query = "") {
         {
           key: "admission",
           source: "入院病摘",
-          status: "待接 Onepage parser",
+          status: "queued",
           fields: ["住院原因", "初始診斷", "治療計畫"],
-          lastResult: "尚未擷取。",
+          lastResult: "等待 Onepage note.sess 背景讀取。",
         },
         {
           key: "progress",
           source: "Progress",
-          status: "待接 Onepage parser",
+          status: "queued",
           fields: ["problem list", "assessment", "plan"],
-          lastResult: "尚未擷取。",
+          lastResult: "等待 Onepage note.sess 背景讀取。",
         },
         {
           key: "discharge",
           source: "出院病摘",
-          status: "待接 Onepage parser",
+          status: "queued",
           fields: ["過去住院結論", "既往診斷與治療史", "出院診斷"],
-          lastResult: "尚未擷取。",
+          lastResult: "等待 Onepage note.sess 背景讀取。",
         },
         {
           key: "adult_assessment",
@@ -120,7 +128,6 @@ function makePendingPatient(query = "") {
         },
       ],
     },
-    aiAssessment: null,
     vitals: [],
     labs: [],
     labMatrix: { columns: [], rows: [] },
@@ -135,9 +142,9 @@ function makePendingPatient(query = "") {
     glucose: [],
     noteSources: [
       { source: "住院醫囑", status: "可自動擷取", usage: "完整 active/DC orders、治療方向" },
-      { source: "入院病摘", status: "待接 parser", usage: "住院原因、初始診斷、治療計畫" },
-      { source: "Progress", status: "待接 parser", usage: "每日問題清單、最新 assessment/plan" },
-      { source: "出院病摘", status: "待接 parser", usage: "既往診斷與治療史" },
+      { source: "入院病摘", status: "待處理", usage: "等待 Onepage note.sess 背景讀取。" },
+      { source: "Progress", status: "待處理", usage: "等待 Onepage note.sess 背景讀取。" },
+      { source: "出院病摘", status: "待處理", usage: "等待 Onepage note.sess 背景讀取。" },
       { source: "成人入院評估", status: "可自動擷取", usage: "過去病史、入院原因、護理評估" },
     ],
   };
@@ -176,6 +183,11 @@ async function buildPatientFromQuery(query, user = null, options = {}) {
   const onepageToken = user?.onepageAuthToken || "";
   const resolved = await resolveCurrentAdmissionCached(query, user);
   if (resolved.status !== "ok") {
+    if (isOnepageAuthenticationFailure(resolved.message)) {
+      const error = new Error("Onepage authentication token was rejected.");
+      error.code = "onepage_auth_invalid";
+      throw error;
+    }
     return {
       ...basePatient,
       source: resolved.status,
@@ -206,15 +218,69 @@ async function buildPatientFromQuery(query, user = null, options = {}) {
   }
 
   const sourceResult = await refreshSources(
-    { patientRef: identifiedPatient.chartNo, feeno: admission.feeNo, onepageAuthToken: onepageToken },
+    {
+      patientRef: identifiedPatient.chartNo,
+      feeno: admission.feeNo,
+      admissionStart: identifiedPatient.admissionPeriod?.startDate || "",
+      onepageAuthToken: onepageToken,
+    },
     requestedPatientSources(mode, options.sources)
   );
+  if (sourceResult.onepageAuthInvalid) {
+    const error = new Error("Onepage authentication token was rejected.");
+    error.code = "onepage_auth_invalid";
+    throw error;
+  }
   const merged = mergeSourceResultIntoPatient(identifiedPatient, sourceResult);
+  return { ...merged, loadMode: mode };
+}
+
+async function openOneRecordNote(query, user, options = {}) {
+  const noteType = ["admission", "progress", "discharge"].includes(options.noteType) ? options.noteType : "";
+  if (!noteType) throw new Error("noteType is required");
+  const resolved = await resolveCurrentAdmissionCached(query, user);
+  if (resolved.status !== "ok" || !resolved.admission?.feeNo) {
+    throw new Error(resolved.message || "找不到目前住院資料。");
+  }
+  const notes = await fetchOnepageNoteSession({
+    feeno: resolved.admission.feeNo,
+    authToken: user?.onepageAuthToken || "",
+  });
+  const selected = selectOneRecordNote(notes, noteType, options.noteId);
+  if (!selected?.id) {
+    return { status: "unfinished", noteType, message: "病歷尚未完成" };
+  }
+  const base = String(process.env.ONEPAGE_BASE || "http://10.125.10.11:8040").replace(/\/$/, "");
+  const response = await fetch(`${base}/api/auth.redirect`, {
+    method: "POST",
+    headers: {
+      accept: "application/json, text/plain, */*",
+      "content-type": "application/json",
+      origin: base,
+      referer: `${base}/mypage`,
+      "x-app-token": process.env.ONEPAGE_APP_TOKEN || "app_tok_9c34eefcdfffc2e66c30f4cb6885e22d",
+      "x-wfauth": user?.onepageAuthToken || "",
+    },
+    body: JSON.stringify({ sys: "onerecord", uri: `/embed?id=${selected.id}`, http_redirect: false }),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || !payload?.url) {
+    return { status: "unavailable", noteType, message: "OneRecord 文件暫時無法開啟，請回原始系統核對。" };
+  }
   return {
-    ...merged,
-    loadMode: mode,
-    aiAssessment: buildRuleBasedAssessment(merged),
+    status: "available",
+    noteType,
+    note: { id: selected.id, date: selected.date || "", title: selected.title || noteType, author: selected.author || "" },
+    embedUrl: payload.url,
   };
+}
+
+function selectOneRecordNote(notes, noteType, noteId = "") {
+  if (noteType === "progress") {
+    const rows = Array.isArray(notes?.progress) ? notes.progress : [];
+    return rows.find((row) => String(row.id) === String(noteId)) || rows[0] || null;
+  }
+  return notes?.[noteType] || null;
 }
 
 function requestedPatientSources(mode, sources) {
@@ -252,7 +318,9 @@ export async function buildPatientLabHistory(query, user = null, options = {}) {
   const onepageToken = user?.onepageAuthToken || "";
   const resolved = await resolveCurrentAdmissionCached(normalizedQuery, user);
   if (resolved.status !== "ok" || !resolved.admission?.feeNo) {
-    throw new Error(resolved.message || "Onepage 找不到目前住院資料，無法讀取檢驗歷史。");
+    const error = new Error(resolved.message || "Onepage 找不到目前住院資料，無法讀取檢驗歷史。");
+    if (isOnepageAuthenticationFailure(error)) error.code = "onepage_auth_invalid";
+    throw error;
   }
   const chartNo = resolved.admission.chartNo || normalizedQuery;
   const result = await fetchOnepageClinicalSource({
@@ -286,6 +354,7 @@ function mergeSourceResultIntoPatient(patient, result) {
     message: result.message || patient.message,
     feeno: result.feeno || patient.feeno || null,
     loadedSources: result.requestedSources || [],
+    sourceResults: result.sourceResults || [],
   };
 
   if (Array.isArray(result.orders)) {
@@ -376,9 +445,7 @@ function mergeSourceResultIntoPatient(patient, result) {
     return {
       ...source,
       status: status.status,
-      lastResult: status.status === "ok"
-        ? (status.empty ? `目前無資料${status.endpoint ? ` (${status.endpoint})` : ""}` : `已擷取 ${status.count || 0} 筆${status.endpoint ? ` (${status.endpoint})` : ""}`)
-        : compactSourceError(status.message || result.message),
+      lastResult: describeSourceResult(status, result.message),
     };
   });
   merged.noteSources = (merged.noteSources || []).map((source) => {
@@ -387,10 +454,8 @@ function mergeSourceResultIntoPatient(patient, result) {
     if (!status) return source;
     return {
       ...source,
-      status: status.status === "ok" ? (status.empty ? "目前無資料" : "已擷取") : "擷取失敗",
-      usage: status.status === "ok"
-        ? (status.empty ? `目前無資料${status.endpoint ? ` (${status.endpoint})` : ""}` : `已擷取 ${status.count || 0} 筆${status.endpoint ? ` (${status.endpoint})` : ""}`)
-        : compactSourceError(status.message || ""),
+      status: status.status === "ok" ? (status.empty ? "目前無資料" : (status.indexed ? "已取得索引" : "已擷取")) : "擷取失敗",
+      usage: describeSourceResult(status),
     };
   });
   for (const status of result.sourceResults || []) {
@@ -401,7 +466,7 @@ function mergeSourceResultIntoPatient(patient, result) {
       source: SOURCE_LABELS[status.source],
       status: status.status,
       fields: [],
-      lastResult: status.status === "ok" ? `已擷取 ${status.count || 0} 筆${status.endpoint ? ` (${status.endpoint})` : ""}` : compactSourceError(status.message || ""),
+      lastResult: describeSourceResult(status),
     });
   }
   const lines = [];
@@ -543,7 +608,7 @@ function publicUser(session) {
 }
 
 function patientCacheKey(username, query, mode = "full") {
-  return `${safeUserId(username || "default")}:${mode}:${String(query || "").trim().toLowerCase()}`;
+  return `${safeUserId(username || "default")}:${PATIENT_CACHE_VERSION}:${mode}:${String(query || "").trim().toLowerCase()}`;
 }
 
 function getCachedPatient(username, query, mode = "full") {
@@ -561,6 +626,21 @@ function setCachedPatient(username, query, patient, mode = "full") {
   if (patient.bedNo) {
     patientCache.set(patientCacheKey(username, patient.bedNo, mode), { cachedAt: Date.now(), patient });
   }
+}
+
+function clearCachedPatient(username, ...references) {
+  const normalizedReferences = new Set(references.map((value) => String(value || "").trim().toLowerCase()).filter(Boolean));
+  if (!normalizedReferences.size) return;
+  const prefix = `${safeUserId(username || "default")}:${PATIENT_CACHE_VERSION}:`;
+  for (const key of patientCache.keys()) {
+    if (!key.startsWith(prefix)) continue;
+    const reference = key.slice(key.lastIndexOf(":") + 1);
+    if (normalizedReferences.has(reference)) patientCache.delete(key);
+  }
+}
+
+function detailCacheMode(sources = CORE_DETAIL_SOURCES) {
+  return `details:${[...sources].sort().join(",")}`;
 }
 
 async function loadPatientOnce(user, query, mode, sources) {
@@ -600,17 +680,7 @@ async function loginOnepageUser({ username, password }) {
   try {
     // 密碼只傳入這一次瀏覽器登入流程；不寫入磁碟、log 或 cookie。
     const onepage = await loginOnepageViaBrowser({ username: normalizedUsername, password: String(password) });
-    const sessionId = randomBytes(32).toString("hex");
-    const now = new Date();
-    const session = {
-      username: safeUserId(onepage.username || normalizedUsername) || normalizedUsername,
-      displayName: String(onepage.displayName || normalizedUsername).trim() || normalizedUsername,
-      onepageAuthToken: onepage.authToken,
-      onepageLoggedInAt: now.toISOString(),
-      expiresAt: Date.now() + SESSION_TTL_MS,
-    };
-    activeSessions.set(sessionId, session);
-    await persistSessions();
+    const { sessionId, session } = await createAndPersistOnepageSession(onepage, normalizedUsername);
     return { ok: true, sessionId, user: publicUser(session), validationWarning: onepage.validationWarning || "" };
   } catch (error) {
     return {
@@ -620,6 +690,61 @@ async function loginOnepageUser({ username, password }) {
       message: error?.message || "Onepage 登入失敗。",
     };
   }
+}
+
+async function createAndPersistOnepageSession(onepage, fallbackUsername) {
+  const sessionId = randomBytes(32).toString("hex");
+  const now = new Date();
+  const session = {
+    username: safeUserId(onepage.username || fallbackUsername) || fallbackUsername,
+    displayName: String(onepage.displayName || fallbackUsername).trim() || fallbackUsername,
+    onepageAuthToken: onepage.authToken,
+    onepageLoggedInAt: now.toISOString(),
+    expiresAt: Date.now() + SESSION_TTL_MS,
+  };
+  activeSessions.set(sessionId, session);
+  await persistSessions();
+  return { sessionId, session };
+}
+
+export async function refreshOnepageSessionFromCredential() {
+  if (Date.now() < relayLoginCooldownUntil) {
+    const error = new Error("Onepage automatic refresh is cooling down.");
+    error.code = "onepage_refresh_cooldown";
+    throw error;
+  }
+  try {
+    const script = join(__dirname, "..", "scripts", "Manage-OnepageRelayCredential.ps1");
+    const { stdout } = await execFileAsync("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script, "-ReadJson"], { windowsHide: true, maxBuffer: 16 * 1024 });
+    const credential = JSON.parse(String(stdout || "{}").trim() || "{}");
+    if (!credential.configured || !credential.username || !credential.password) {
+      const error = new Error("Onepage relay credential is not configured for this Windows user.");
+      error.code = "onepage_credential_missing";
+      throw error;
+    }
+    const onepage = await loginOnepageViaBrowser({ username: credential.username, password: credential.password });
+    const { session } = await createAndPersistOnepageSession(onepage, credential.username);
+    return { ok: true, code: "session_refreshed", username: session.username, refreshedAt: session.onepageLoggedInAt };
+  } catch (cause) {
+    await appendOnepageRefreshAudit(cause).catch(() => null);
+    relayLoginCooldownUntil = Date.now() + RELAY_LOGIN_COOLDOWN_MS;
+    const error = new Error("Onepage session refresh failed.");
+    error.code = cause?.code === "onepage_credential_missing" ? cause.code : "onepage_refresh_failed";
+    throw error;
+  }
+}
+
+async function appendOnepageRefreshAudit(cause) {
+  await mkdir(localDir, { recursive: true });
+  const detail = String(cause?.stack || cause?.message || cause || "unknown")
+    .replace(/[A-Za-z0-9_-]{24,}/g, "[redacted]")
+    .slice(0, 4000);
+  await appendFile(onepageRefreshAuditPath, `${JSON.stringify({ at: new Date().toISOString(), outcome: "failed", detail })}\n`, { encoding: "utf8", mode: 0o600 });
+}
+
+export function isOnepageAuthenticationFailure(value) {
+  const text = String(value?.message || value || "");
+  return /\b(?:401|403)\b|auth(?:entication)?\s*(?:token)?\s*(?:is\s*)?(?:invalid|expired|missing|required)|x-wfauth|unauthori[sz]ed|forbidden/i.test(text);
 }
 
 function readOnepageSessionMeta(user) {
@@ -790,6 +915,8 @@ async function refreshSources(body, sources) {
           source,
           feeno: body.feeno,
           chartNo: body.patientRef || body.chartNo || "",
+          admissionStart: body.admissionStart || "",
+          admissionEnd: body.admissionEnd || new Date().toISOString(),
           authToken: body.onepageAuthToken || process.env.ONEPAGE_AUTH_TOKEN || "",
         });
         clinicalResults[source] = clinicalResult;
@@ -820,6 +947,7 @@ async function refreshSources(body, sources) {
       try {
         glucoseResult = await fetchBloodSugarInsulin({
           feeno: body.feeno,
+          admissionStart: body.admissionStart || "",
           nisBase: process.env.NIS_BASE || "http://10.125.254.46/NIS",
         });
         markOk("glucose", { count: glucoseResult.rows.length, endpoint: glucoseResult.endpoint });
@@ -847,6 +975,8 @@ async function refreshSources(body, sources) {
   }
 
   await Promise.all(tasks);
+
+  const onepageAuthInvalid = sourceResults.some((item) => ["vitals", "admission", "progress", "discharge", "labs", "imaging", "surgeries", "pathology"].includes(item.source) && item.status === "error" && isOnepageAuthenticationFailure(item.message));
 
   const ok = sourceResults.some((item) => item.status === "ok");
   return {
@@ -883,6 +1013,7 @@ async function refreshSources(body, sources) {
     } : null,
     profile,
     sourceResults,
+    onepageAuthInvalid,
   };
 }
 
@@ -966,6 +1097,14 @@ function parseReferenceRange(refText) {
   const greaterThan = text.match(/[>≥]\s*(-?\d+(?:\.\d+)?)/);
   if (greaterThan) return { low: Number(greaterThan[1]), high: null };
   return null;
+}
+
+function describeSourceResult(status = {}, fallbackMessage = "") {
+  if (status.status !== "ok") return compactSourceError(status.message || fallbackMessage);
+  const endpoint = status.endpoint ? ` (${status.endpoint})` : "";
+  if (status.empty) return `目前無資料${endpoint}`;
+  if (status.indexed) return `已取得 ${status.count || 0} 筆索引；原文需由 OneRecord 文件檢視器讀取${endpoint}`;
+  return `已擷取 ${status.count || 0} 筆${endpoint}`;
 }
 
 function compactSourceError(message = "") {
@@ -1068,7 +1207,7 @@ async function routeApi(req, res, url) {
     const query = String(body.query || "").trim();
     const mode = ["quick", "details"].includes(body.mode) ? body.mode : "full";
     const sources = Array.isArray(body.sources) ? body.sources.filter((source) => ALL_PATIENT_SOURCES.includes(source)) : [];
-    const cacheMode = sources.length ? `${mode}:${[...sources].sort().join(",")}` : mode;
+    const cacheMode = sources.length ? detailCacheMode(sources) : mode;
     const cached = getCachedPatient(user.username, query, cacheMode);
     if (cached) {
       await appendAudit({ actor: user.username, action: "patient_search_cache", patientRef: query, outcome: cached.source || "unknown", detail: { hasFeeNo: !!cached.feeno } });
@@ -1089,12 +1228,27 @@ async function routeApi(req, res, url) {
     const body = await readBody(req);
     const query = body.patientRef || body.query || "";
     const patient = { ...(await buildPatientFromQuery(query, user, { mode: "full" })), refreshed: true };
+    clearCachedPatient(user.username, query, patient.chartNo, patient.bedNo);
     setCachedPatient(user.username, query, patient, "full");
     setCachedPatient(user.username, query, patient, "quick");
     setCachedPatient(user.username, query, patient, "details");
+    setCachedPatient(user.username, query, patient, detailCacheMode());
     await rememberRecentPatient(user.username, patient);
     await appendAudit({ actor: user.username, action: "patient_refresh", patientRef: query, outcome: patient.source || "unknown", detail: { hasFeeNo: !!patient.feeno } });
     json(res, 200, patient);
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/patients/note") {
+    const user = await requireUser(req, res);
+    if (!user) return;
+    const body = await readBody(req);
+    const query = String(body.patientRef || body.query || "").trim();
+    if (!query) {
+      json(res, 400, { error: "invalid_query", message: "請指定病人。" });
+      return;
+    }
+    json(res, 200, await openOneRecordNote(query, user, { noteType: body.noteType, noteId: body.noteId }));
     return;
   }
 
@@ -1112,19 +1266,6 @@ async function routeApi(req, res, url) {
     if (!user) return;
     const body = await readBody(req);
     json(res, 200, await refreshSources({ ...body, onepageAuthToken: user.onepageAuthToken || "" }, ["orders"]));
-    return;
-  }
-
-  if (req.method === "POST" && url.pathname === "/api/ai/assessment") {
-    const user = await requireUser(req, res);
-    if (!user) return;
-    const body = await readBody(req);
-    const patient = body.patient || makePendingPatient(body.patientRef || body.query || "");
-    const assessment = buildRuleBasedAssessment(patient);
-    json(res, 200, {
-      patientRef: body.patientRef || patient.patientRef || "",
-      ...assessment,
-    });
     return;
   }
 

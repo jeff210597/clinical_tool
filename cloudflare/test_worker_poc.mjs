@@ -122,4 +122,16 @@ await request("POST", "https://example.test/api/cf-shadow/agent/respond", {
 });
 const result = await request("GET", `https://example.test/api/cf-shadow/result/${created.id}?pin=${env.CF_SHADOW_PIN}`);
 if (result.status !== "done" || result.result?.ok !== true) throw new Error("result did not round-trip");
+
+const refresh = await request("POST", "https://example.test/api/cf-shadow/request", {
+  headers: { "x-shadow-pin": env.CF_SHADOW_PIN },
+  body: { type: "session_refresh", payload: { crypto: { ecdhPublicKey: "a".repeat(120) } } },
+});
+const refreshPoll = await request("GET", "https://example.test/api/cf-shadow/agent/poll", {
+  headers: { "x-relay-key": env.CF_SHADOW_RELAY_KEY },
+});
+const refreshRequest = refreshPoll.requests.find((item) => item.id === refresh.id);
+if (!refreshRequest || refreshRequest.type !== "session_refresh" || "username" in refreshRequest.payload || "password" in refreshRequest.payload) {
+  throw new Error("session_refresh mailbox request was not safely normalized");
+}
 console.log("Cloudflare POC worker smoke test OK");

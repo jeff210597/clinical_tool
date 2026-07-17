@@ -1,18 +1,30 @@
 const DEFAULT_NIS_BASE = "http://10.125.254.46/NIS";
 
-export async function fetchBloodSugarInsulin({ feeno, nisBase = DEFAULT_NIS_BASE, fetchImpl = fetch }) {
+export async function fetchBloodSugarInsulin({ feeno, admissionStart = "", nisBase = DEFAULT_NIS_BASE, fetchImpl = fetch }) {
   const feeNo = String(feeno || "").trim();
   if (!feeNo) throw new Error("feeno is required");
 
   const primaryUrl = `${nisBase.replace(/\/$/, "")}/HISVIEW/BSugarInsulinList?feeno=${encodeURIComponent(feeNo)}`;
-  const response = await fetchImpl(primaryUrl);
-  if (!response.ok) throw new Error(`blood sugar insulin request failed: ${response.status}`);
+  const initialResponse = await fetchImpl(primaryUrl);
+  if (!initialResponse.ok) throw new Error(`blood sugar insulin request failed: ${initialResponse.status}`);
+
+  const initialHtml = await initialResponse.text();
+  const query = parseBloodSugarQuery(initialHtml, feeNo, primaryUrl, admissionStart);
+  const response = query
+    ? await fetchImpl(query.url, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams(query.fields).toString(),
+    })
+    : { ok: true, text: async () => initialHtml };
+  if (!response.ok) throw new Error(`blood sugar insulin query failed: ${response.status}`);
 
   const html = await response.text();
   return {
     source: "NIS 血糖/胰島素",
     endpoint: "HISVIEW/BSugarInsulinList",
     capturedAt: new Date().toISOString(),
+    querySubmitted: !!query,
     rows: parseBloodSugarInsulin(html),
   };
 }
@@ -52,6 +64,41 @@ function extractCells(rowHtml) {
     attrs: match[1] || "",
     html: match[2] || "",
   }));
+}
+
+function parseBloodSugarQuery(html, feeNo, baseUrl, admissionStart = "") {
+  const formMatch = String(html || "").match(/<form\b([^>]*)>[\s\S]*?<\/form>/i);
+  if (!formMatch) return null;
+
+  const formAttrs = formMatch[1] || "";
+  const action = attrValue(formAttrs, "action") || "BSugarInsulinList";
+  const fields = { feeno: String(feeNo) };
+  for (const match of formMatch[0].matchAll(/<input\b([^>]*)>/gi)) {
+    const attrs = match[1] || "";
+    const name = attrValue(attrs, "name");
+    if (!name || !["feeno", "start_date", "start_time", "end_date", "end_time"].includes(name)) continue;
+    fields[name] = attrValue(attrs, "value") || "";
+  }
+
+  if (!fields.start_date || !fields.end_date) return null;
+  const admissionDate = formatNisDate(admissionStart);
+  if (admissionDate && admissionDate < fields.start_date) fields.start_date = admissionDate;
+  return { url: new URL(action, baseUrl).toString(), fields };
+}
+
+function formatNisDate(value) {
+  const match = String(value || "").match(/(\d{3,4})[/-](\d{1,2})[/-](\d{1,2})/);
+  if (!match) return "";
+  let year = Number(match[1]);
+  if (year >= 100 && year < 300) year += 1911;
+  if (year < 1900 || year > 2100) return "";
+  return `${year}/${String(match[2]).padStart(2, "0")}/${String(match[3]).padStart(2, "0")}`;
+}
+
+function attrValue(attrs, name) {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = String(attrs || "").match(new RegExp(`\\b${escaped}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, "i"));
+  return match ? (match[1] ?? match[2] ?? match[3] ?? "") : "";
 }
 
 function cleanText(value) {

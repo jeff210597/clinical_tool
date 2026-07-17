@@ -11,7 +11,17 @@ export async function fetchAdultAdmissionAssessment({ feeno, nisBase = DEFAULT_N
 }
 
 export function parseAdultAdmissionAssessment(html) {
-  const fields = extractSubtitleFields(html);
+  const staticFields = extractSubtitleFields(html);
+  const scriptFields = extractScriptFields(html);
+  const fields = {
+    ...staticFields,
+    "入院原因": scriptFields.param_ipd_reason || staticFields["入院原因"] || "",
+    "內科病史": buildMedicalHistory(scriptFields, staticFields),
+    "外科病史": buildSurgicalHistory(scriptFields, staticFields),
+    "其他病史": selectedScriptText(scriptFields, "param_other_history", ["param_other_history_desc"]) || staticFields["其他病史"] || "",
+    "過敏史": selectedScriptText(scriptFields, "param_allergy_history", ["param_allergy_history_desc"]) || staticFields["過敏史"] || "",
+    "家族病史": selectedScriptText(scriptFields, "param_family_history", ["param_family_history_desc"]) || staticFields["家族病史"] || "",
+  };
   const get = (...names) => {
     for (const name of names) {
       const value = fields[name];
@@ -21,11 +31,11 @@ export function parseAdultAdmissionAssessment(html) {
   };
 
   const pastHistoryParts = [
-    fieldLine("內科病史", get("內科病史")),
-    fieldLine("外科病史", get("外科病史")),
-    fieldLine("其他病史", get("其他病史")),
-    fieldLine("過敏史", get("過敏史")),
-    fieldLine("家族病史", get("家族病史")),
+    fieldLine("內科病史", get("內科病史"), { omitNegative: true }),
+    fieldLine("外科病史", get("外科病史"), { omitNegative: true }),
+    fieldLine("其他病史", get("其他病史"), { omitNegative: true }),
+    fieldLine("過敏史", get("過敏史"), { omitNegative: true }),
+    fieldLine("家族病史", get("家族病史"), { omitNegative: true }),
   ].filter(Boolean);
 
   const functionalParts = [
@@ -49,14 +59,68 @@ export function parseAdultAdmissionAssessment(html) {
     capturedAt: new Date().toISOString(),
     admissionReason: get("入院原因"),
     pastHistory: pastHistoryParts.join("；"),
+    pastHistoryStatus: pastHistoryParts.length ? "reported" : (hasHistoryResponse(fields) ? "reported_none" : "not_provided"),
     functionalAssessment: functionalParts.join("；"),
     fields,
     rawSourceRef: null,
   };
 }
 
-function fieldLine(label, value) {
-  return value ? `${label}: ${value}` : "";
+function extractScriptFields(html) {
+  const fields = {};
+  const pattern = /set_for_(?:txt|rb|cb)\(\s*'((?:\\.|[^'])*)'\s*,\s*'((?:\\.|[^'])*)'\s*\)/g;
+  for (const match of String(html || "").matchAll(pattern)) {
+    const name = decodeJsString(match[1]);
+    const value = decodeJsString(match[2]);
+    if (name) fields[name] = value;
+  }
+  return fields;
+}
+
+function decodeJsString(value) {
+  return htmlDecode(String(value || "")
+    .replace(/\\r\\n|\\n|\\r/g, "\n")
+    .replace(/\\'/g, "'")
+    .replace(/\\"/g, '"')
+    .replace(/\\\\/g, "\\")
+    .trim());
+}
+
+function selectedScriptText(scriptFields, selectedField, detailFields) {
+  if (String(scriptFields[selectedField] || "").trim() !== "有") return "";
+  return detailFields
+    .map((name) => cleanText(scriptFields[name] || ""))
+    .filter(Boolean)
+    .join("；");
+}
+
+function buildMedicalHistory(scriptFields, staticFields) {
+  const text = selectedScriptText(scriptFields, "param_im_history", [
+    "param_im_history_item1", "param_im_history_item2", "param_im_history_item3", "param_im_history_item4",
+    "param_im_history_item_other_txt", "param_im_history_status",
+  ]);
+  return text || staticFields["內科病史"] || "";
+}
+
+function buildSurgicalHistory(scriptFields, staticFields) {
+  const text = selectedScriptText(scriptFields, "param_su_history", [
+    "param_su_history_trauma_txt", "param_su_history_surgery_txt", "param_su_history_other_txt",
+  ]);
+  return text || staticFields["外科病史"] || "";
+}
+
+function fieldLine(label, value, options = {}) {
+  const text = String(value || "").trim();
+  if (!text || (options.omitNegative && isNegativeHistoryValue(text))) return "";
+  return `${label}: ${text}`;
+}
+
+function isNegativeHistoryValue(value) {
+  return /^(?:無|否認|none|nil|no)(?:\s*(?:特殊|病史|過敏|remarkable))?$/i.test(String(value || "").trim());
+}
+
+function hasHistoryResponse(fields) {
+  return ["內科病史", "外科病史", "其他病史", "過敏史", "家族病史"].some((name) => String(fields[name] || "").trim());
 }
 
 function extractSubtitleFields(html) {
@@ -75,6 +139,7 @@ function extractSubtitleFields(html) {
 
 function extractBlockValue(block) {
   const values = [];
+  let hasChoiceControl = false;
 
   for (const match of block.matchAll(/<textarea\b[^>]*>([\s\S]*?)<\/textarea>/gi)) {
     pushClean(values, match[1]);
@@ -84,12 +149,13 @@ function extractBlockValue(block) {
     const attrs = match[1];
     const type = getAttr(attrs, "type").toLowerCase();
     const value = getAttr(attrs, "value");
-    const checked = /\bchecked(?:=["']?checked["']?)?/i.test(attrs);
+    const checked = /(?:^|\s)checked(?:\s|=|$)/i.test(attrs);
 
     if (type === "text" || type === "hidden") {
       pushClean(values, value);
-    } else if ((type === "radio" || type === "checkbox") && checked) {
-      pushClean(values, value);
+    } else if (type === "radio" || type === "checkbox") {
+      hasChoiceControl = true;
+      if (checked) pushClean(values, value);
     }
   }
 
@@ -99,7 +165,9 @@ function extractBlockValue(block) {
       .replace(/<input\b[^>]*>/gi, "")
       .replace(/<textarea\b[\s\S]*?<\/textarea>/gi, "")
   );
-  if (!values.length) pushClean(values, visibleText);
+  // Radio / checkbox labels are form choices, not patient data.  Never use
+  // their visible text as a fallback when no option was actually selected.
+  if (!values.length && !hasChoiceControl) pushClean(values, visibleText);
 
   return [...new Set(values)].join(", ");
 }

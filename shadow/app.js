@@ -35,6 +35,7 @@ const el = {
   patientMeta: document.querySelector("#patientMeta"),
   patientWindowTabs: document.querySelector("#patientWindowTabs"),
   refreshPatient: document.querySelector("#refreshPatient"),
+  refreshOnepage: document.querySelector("#refreshOnepage"),
   copySummary: document.querySelector("#copySummary"),
   warningStrip: document.querySelector("#warningStrip"),
   tabs: [...document.querySelectorAll(".tab")],
@@ -120,9 +121,8 @@ async function api(path, options = {}) {
     };
   }
 
-  if (path === "/api/ai/assessment") {
-    const body = parseJsonBody(options.body);
-    return body.patient?.aiAssessment || { summary: "尚未產生 AI 判讀。", labTrends: [], priorities: [], cautions: [] };
+  if (path === "/api/onepage/session-refresh") {
+    return createShadowRequest("session_refresh", {});
   }
 
   const response = await fetch(path, {
@@ -170,6 +170,25 @@ async function requestShadowPatient(query, options = {}) {
   const patient = normalizeShadowPatient(result, query);
   saveShadowRecent(patient);
   return patient;
+}
+
+async function refreshShadowOnepageSession() {
+  if (!state.user) throw new Error("請先輸入影子工作站 PIN。");
+  el.refreshOnepage.disabled = true;
+  el.serviceStatus.textContent = "正在請院內主機重新連線 Onepage…";
+  try {
+    const result = await api("/api/onepage/session-refresh", { method: "POST", body: "{}" });
+    if (!result?.ok || result.code !== "session_refreshed") throw new Error("院內主機無法重新連線 Onepage。");
+    el.serviceStatus.textContent = "Onepage 已重新連線";
+    el.patientMeta.textContent = "院內主機已刷新 Onepage session；可重新整理病人資料。";
+  } catch (error) {
+    const message = String(error?.message || "");
+    el.serviceStatus.textContent = /cooling down/i.test(message) ? "Onepage 重新登入暫時冷卻中" : "Onepage 重新連線失敗";
+    el.patientMeta.textContent = "院內主機未能刷新 session；請在院內主機確認 Onepage 憑證與 relay 狀態。";
+    throw error;
+  } finally {
+    el.refreshOnepage.disabled = !state.user;
+  }
 }
 
 async function loadShadowLabHistory(offset = 0, range = {}) {
@@ -223,7 +242,16 @@ async function pollShadowResult(id, privateKey = null) {
     }
     if (result.status === "error") {
       const decryptedError = await decryptResultIfNeeded(result.result, privateKey).catch(() => null);
+      const code = decryptedError?.code || result.error || "relay_request_failed";
+      if (code === "onepage_refresh_cooldown") el.serviceStatus.textContent = "Onepage 重新登入暫時冷卻中";
+      else if (code === "onepage_credential_missing") el.serviceStatus.textContent = "院內主機尚未設定 Onepage 憑證";
+      else if (code === "onepage_refresh_failed") el.serviceStatus.textContent = "Onepage 自動重新登入失敗";
+      else el.serviceStatus.textContent = "院內 relay 無法完成查詢";
       throw new Error(decryptedError?.error || result.error || "院內 relay 回傳錯誤。");
+    }
+    if (result.status === "expired") {
+      el.serviceStatus.textContent = "院內 relay 離線或未回覆";
+      throw new Error("院內 relay 未在時限內回覆。");
     }
     await sleep(2000);
   }
@@ -343,6 +371,7 @@ function renderAuth() {
   el.openRosterPatients.disabled = !loggedIn || !state.physicianRoster.length;
   el.refreshRosterPatients.disabled = !loggedIn || !state.physicianRoster.length;
   el.reloadRecent.disabled = !loggedIn;
+  el.refreshOnepage.disabled = !loggedIn;
   if (loggedIn) {
     el.currentUserLabel.textContent = `${state.user.displayName || state.user.username} 已解鎖`;
   } else {
@@ -531,7 +560,7 @@ function renderPatient(patient, options = {}) {
   document.querySelector("#summaryPanel").innerHTML = roundingSummary(patient);
 
   document.querySelector("#contextPanel").innerHTML = clinicalContext(patient.clinicalContext, patient.noteSources);
-  document.querySelector("#aiPanel").innerHTML = aiAssessment(patient.aiAssessment);
+  document.querySelector("#notePanel").innerHTML = notePanel(patient);
   document.querySelector("#labsPanel").innerHTML = renderLabs(patient);
   document.querySelector("#imagingPanel").innerHTML = renderImaging(patient.imaging || []);
   document.querySelector("#surgeryPanel").innerHTML = renderSurgeries(patient.surgeries || []);
@@ -540,7 +569,7 @@ function renderPatient(patient, options = {}) {
   document.querySelector("#ordersPanel").innerHTML = renderOrders(patient.orders || []);
   document.querySelector("#tprPanel").innerHTML = renderTpr(patient.tpr || patient.vitals || patient.itpr || [], patient.intakeOutput);
   document.querySelector("#ioPanel").innerHTML = ioPanel(patient.intakeOutput);
-  document.querySelector("#glucosePanel").innerHTML = renderGlucose(patient.glucose || []);
+  document.querySelector("#glucosePanel").innerHTML = renderGlucose(patient.glucose || [], sourceResult(patient, "glucose"));
 }
 
 
@@ -552,7 +581,7 @@ function roundingSummary(patient) {
   return `
     <section class="rounding-note primary-summary">
       <div class="section-title">
-        <strong>可直接查閱／複製的查房摘要</strong>
+        <strong>查房摘要</strong>
         <button id="copyStructuredSummary" type="button">複製查房格式</button>
       </div>
       ${summaryClinicalTables(patient)}
@@ -571,10 +600,6 @@ function roundingSummary(patient) {
       </div>
       <p class="eyebrow">${escapeHtml(patient.message || "")}</p>
     </details>
-    <section class="rounding-safety">
-      <h3>查房前確認</h3>
-      ${roundingChecklist(patient, coverage)}
-    </section>
     <section class="source-status-panel">
       <h3>資料來源與擷取狀態</h3>
       ${table(["來源", "狀態", "最近結果"], sourceRows)}
@@ -838,7 +863,19 @@ function diagnosisLine(patient) {
 
 function historyLine(patient) {
   const rows = patient.clinicalContext?.aiIntegrated?.importantHistory || patient.clinicalContext?.pastHistory || [];
-  return rows.length ? rows.map(displayText).filter(Boolean).join("；") || "尚未擷取" : "尚未擷取";
+  if (rows.length) return rows.map(displayText).filter(Boolean).join("；") || historyLoadStatus(patient);
+  return historyLoadStatus(patient);
+}
+
+function historyLoadStatus(patient) {
+  const loaded = new Set(patient.loadedSources || []);
+  const results = new Map((patient.sourceResults || []).map((item) => [item.source, item]));
+  const failed = ["adult_assessment", "nursing"].find((source) => results.get(source)?.status === "error");
+  if (failed) return failed === "adult_assessment" ? "成人入院評估讀取失敗，請回原系統核對" : "護理入院評估讀取失敗，請回原系統核對";
+  if (!loaded.has("adult_assessment") || !loaded.has("nursing")) return "正在讀取入院評估與護理病史…";
+  const assessment = patient.clinicalContext?.adultAdmissionAssessment;
+  if (assessment?.pastHistoryStatus === "reported_none") return "成人入院評估記載無過去病史";
+  return "入院評估未提供過去病史";
 }
 
 function summarySurgery(rows) {
@@ -1251,6 +1288,13 @@ function clinicalContext(context, sources = []) {
   `;
 }
 
+function notePanel(patient) {
+  const notes = patient.clinicalContext?.noteSession || {};
+  const progress = Array.isArray(notes.progress) ? notes.progress : [];
+  const dates = progress.length ? `<select disabled>${progress.map((row) => `<option>${escapeHtml(row.date || "未提供日期")}</option>`).join("")}</select>` : `<div class="empty-state compact">目前沒有可選的 Progress 索引。</div>`;
+  return `<section class="record-block"><h3>OneRecord Note</h3><p>入院病摘、Progress 與出院病摘索引已列於診斷病史來源。</p>${dates}<div class="empty-state">為避免把院內 OneRecord 登入權杖傳到院外，原始文件僅能在院內工作站的 Note 分頁檢視。</div></section>`;
+}
+
 function integratedDiagnosisContext(context, sources = []) {
   const integrated = context.aiIntegrated || {};
   return `
@@ -1271,12 +1315,33 @@ function integratedDiagnosisContext(context, sources = []) {
         <summary>來源證據與擷取狀態</summary>
         <h3>來源證據</h3>
         ${evidenceTable(integrated.evidence || [])}
+        <h3>Surgical postoperative diagnosis</h3>
+        ${surgicalDiagnosisEvidence(context.surgicalDiagnosisEvidence || [])}
         <h3>成人入院評估單</h3>${adultAssessment(context.adultAdmissionAssessment)}
+        <h3>護理入院評估</h3>${nursingAdmissionAssessment(context.nursingAdmissionAssessment)}
         <h3>病摘與 Progress</h3>${noteSessionRecords(context.noteSession)}
         <h3>來源擷取工作台</h3>${sourceWorkbench(context.sourceExtracts || [])}
         <h3>資料來源狀態</h3>${table(["來源", "狀態", "用途"], (sources || []).map((row) => [row.source, row.status, row.usage]))}
       </details>
     </div>
+  `;
+}
+
+function nursingAdmissionAssessment(assessment) {
+  if (!assessment) return `<div class="empty-state">尚未讀取護理入院評估。</div>`;
+  const history = assessment.pastHistory
+    ? `<article class="record-item"><strong>擷取的過去病史</strong><pre>${escapeHtml(assessment.pastHistory)}</pre></article>`
+    : `<div class="empty-state compact">已讀取入院評估，但未找到可確認的過去病史。</div>`;
+  return `
+    <div class="assessment-grid">
+      <article class="record-item"><strong>紀錄時間</strong><div>${escapeHtml(assessment.time || "")}</div></article>
+      <article class="record-item"><strong>輸入者</strong><div>${escapeHtml(assessment.author || "")}</div></article>
+    </div>
+    ${history}
+    <details class="diagnosis-detail">
+      <summary>檢視首筆護理入院評估原文</summary>
+      <pre>${escapeHtml(assessment.rawNote || "")}</pre>
+    </details>
   `;
 }
 
@@ -1306,6 +1371,23 @@ function diagnosisBulletList(items, options = {}) {
       `).join("")}
     </ul>
   `;
+}
+
+function surgicalDiagnosisEvidence(items = []) {
+  if (!items.length) return `<div class="empty-state compact">No verified postoperative diagnosis extracted.</div>`;
+  const effectLabel = {
+    current_support: "Current admission: supports an existing diagnosis",
+    past_history: "Previous admission: included as past history",
+    review_only: "Unverified: surgery tab review only",
+  };
+  return records(items.map((item) => ({
+    title: [item.date, item.diagnosis].filter(Boolean).join(" · ") || "Postoperative diagnosis",
+    body: [
+      item.procedure && `Procedure: ${item.procedure}`,
+      effectLabel[item.effect] || "Unverified",
+      item.admissionEvidence && `Episode evidence: ${item.admissionEvidence}`,
+    ].filter(Boolean).join("; "),
+  })));
 }
 
 function diagnosisItems(items) {
@@ -1359,45 +1441,6 @@ function sourceWorkbench(sources) {
 function sourceList(items = []) {
   if (!items.length) return `<div class="empty-state">尚無資料。</div>`;
   return records(items.map((item) => ({ title: item.source, body: item.text })));
-}
-
-function aiAssessment(ai) {
-  if (!ai) return `<div class="empty-state">尚未產生 AI 判讀。</div>`;
-  return `
-    <div class="ai-banner"><strong>AI 輔助判讀</strong><span>請保留來源核對，不取代醫師判斷。</span></div>
-    <div class="context-actions"><button id="generateAi" type="button">重新產生 AI 判讀</button><span>目前是 rule-based，本機院內主機可再接 LLM。</span></div>
-    <pre class="summary-text">${escapeHtml(ai.summary)}</pre>
-    <section class="ai-trend-section">
-      <h3>抽血趨勢表</h3>
-      ${ai.labTrends?.length ? table(
-        ["項目", "最新", "前值", "變化", "參考值", "時間"],
-        ai.labTrends.map((row) => [
-          row.item,
-          labValueHtml(row),
-          row.previous || "",
-          trendLabel(row),
-          row.ref || "",
-          row.time || "",
-        ]),
-        "ai-trend-table"
-      ) : missingDataState()}
-    </section>
-    <div class="context-grid">
-      <section><h3>可能病情變化</h3>${bulletList(ai.priorities)}</section>
-      <section><h3>注意事項</h3>${bulletList(ai.cautions)}</section>
-    </div>
-  `;
-}
-
-function trendLabel(row = {}) {
-  const direction = row.direction === "up" ? "上升" : row.direction === "down" ? "下降" : row.direction === "flat" ? "持平" : "";
-  const delta = row.delta !== "" && row.delta !== undefined ? ` (${row.delta > 0 ? "+" : ""}${row.delta})` : "";
-  const className = row.direction ? `trend-${escapeHtml(row.direction)}` : "";
-  return direction ? `<span class="${className}">${escapeHtml(direction + delta)}</span>` : "";
-}
-
-function bulletList(items = []) {
-  return `<ul class="bullet-list">${items.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`;
 }
 
 function ioSummary(io) {
@@ -1479,7 +1522,15 @@ function ioDayRows(kind, date, records) {
     .filter(Boolean);
 }
 
-function renderGlucose(rows) {
+function renderGlucose(rows, result = null) {
+  if (!rows.length) {
+    const message = result?.status === "error"
+      ? `血糖資料讀取失敗：${result.message || "院內來源暫時無法回應。"}`
+      : result?.status === "ok"
+        ? "已完成血糖資料查詢；此病人在目前院內系統提供的日期區間內沒有血糖／胰島素紀錄。"
+        : "尚未載入血糖資料。請重新開啟此分頁後再試。";
+    return missingDataState(message);
+  }
   return table(
     ["血糖監測時間", "血糖值", "監測者", "注射時間", "藥物", "劑量", "施打部位", "Sliding Scale", "劑量", "注射者"],
     rows.map((row) => [
@@ -1496,6 +1547,10 @@ function renderGlucose(rows) {
     ]),
     "glucose-table"
   );
+}
+
+function sourceResult(patient, source) {
+  return (patient?.sourceResults || []).find((item) => item?.source === source) || null;
 }
 
 function ioWideTable(columns, records) {
@@ -1579,8 +1634,8 @@ function records(items) {
   return `<div class="record-list">${items.map((item) => `<article class="record-item"><strong>${escapeHtml(item.title)}</strong><div>${escapeHtml(item.body)}</div></article>`).join("")}</div>`;
 }
 
-function missingDataState() {
-  return `<div class="empty-state">尚未擷取資料。請輸入病歷號或床號查詢；若仍無資料，可能是院內工作站 session 已失效或此來源 parser 尚未接上。</div>`;
+function missingDataState(message = "尚未擷取資料。請輸入病歷號或床號查詢；若仍無資料，可能是院內工作站 session 已失效或此來源 parser 尚未接上。") {
+  return `<div class="empty-state">${escapeHtml(message)}</div>`;
 }
 
 function parseDisplayTime(value) {
@@ -1608,7 +1663,7 @@ async function loadPatient(query, options = {}) {
   return patient;
 }
 
-async function loadShadowPatientDetails(query, expectedKey, sources = ["orders", "admission", "progress", "discharge", "adult_assessment"]) {
+async function loadShadowPatientDetails(query, expectedKey, sources = ["orders", "admission", "progress", "discharge", "adult_assessment", "imaging", "surgeries", "pathology", "nursing"]) {
   const loadKey = `${expectedKey}:${[...sources].sort().join(",")}`;
   if (state.detailLoadingKey === loadKey) return;
   state.detailLoadingKey = loadKey;
@@ -1636,6 +1691,8 @@ function mergePatientLoad(patient, previous = {}) {
   patient.labHistory ||= previous.labHistory;
   patient.clinicalContext = { ...previous.clinicalContext, ...patient.clinicalContext };
   patient.loadedSources = [...new Set([...(previous.loadedSources || []), ...(patient.loadedSources || [])])];
+  patient.sourceResults = [...(patient.sourceResults || []), ...(previous.sourceResults || [])]
+    .filter((item, index, rows) => rows.findIndex((row) => row.source === item.source) === index);
 }
 
 async function openPhysicianRosterPatients() {
@@ -1876,14 +1933,6 @@ document.addEventListener("click", async (event) => {
     event.target.textContent = "擷取此來源";
   }
 
-  if (event.target?.id === "generateAi") {
-    if (!state.currentPatient) return;
-    event.target.disabled = true;
-    event.target.textContent = "產生中";
-    const ai = await api("/api/ai/assessment", { method: "POST", body: JSON.stringify({ patientRef: state.currentPatient.patientRef, patient: state.currentPatient }) });
-    state.currentPatient.aiAssessment = ai;
-    document.querySelector("#aiPanel").innerHTML = aiAssessment(ai);
-  }
 });
 
 el.loginForm.addEventListener("submit", async (event) => {
@@ -1945,6 +1994,7 @@ el.reloadRecent.addEventListener("click", async () => {
 el.openRosterPatients.addEventListener("click", openPhysicianRosterPatients);
 el.refreshRosterPatients.addEventListener("click", refreshPhysicianRosterSummaries);
 el.refreshPatient.addEventListener("click", refreshPatient);
+el.refreshOnepage.addEventListener("click", () => refreshShadowOnepageSession().catch(() => null));
 document.addEventListener("click", async (event) => {
   if (event.target?.id !== "copyStructuredSummary" || !state.currentPatient) return;
   const note = buildStructuredRoundingNote(state.currentPatient, buildCoverage(state.currentPatient));

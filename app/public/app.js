@@ -263,7 +263,7 @@ function renderPatient(patient, options = {}) {
   document.querySelector("#summaryPanel").innerHTML = roundingSummary(patient);
 
   document.querySelector("#contextPanel").innerHTML = clinicalContext(patient.clinicalContext, patient.noteSources);
-  document.querySelector("#aiPanel").innerHTML = aiAssessment(patient.aiAssessment);
+  document.querySelector("#notePanel").innerHTML = notePanel(patient);
   document.querySelector("#labsPanel").innerHTML = renderLabs(patient);
   document.querySelector("#imagingPanel").innerHTML = renderImaging(patient.imaging || []);
   document.querySelector("#surgeryPanel").innerHTML = renderSurgeries(patient.surgeries || []);
@@ -272,7 +272,7 @@ function renderPatient(patient, options = {}) {
   document.querySelector("#ordersPanel").innerHTML = renderOrders(patient.orders || []);
   document.querySelector("#tprPanel").innerHTML = renderTpr(patient.tpr || patient.vitals || patient.itpr || [], patient.intakeOutput);
   document.querySelector("#ioPanel").innerHTML = ioPanel(patient.intakeOutput);
-  document.querySelector("#glucosePanel").innerHTML = renderGlucose(patient.glucose || []);
+  document.querySelector("#glucosePanel").innerHTML = renderGlucose(patient.glucose || [], sourceResult(patient, "glucose"));
 }
 
 
@@ -284,7 +284,7 @@ function roundingSummary(patient) {
   return `
     <section class="rounding-note primary-summary">
       <div class="section-title">
-        <strong>可直接查閱／複製的查房摘要</strong>
+        <strong>查房摘要</strong>
         <button id="copyStructuredSummary" type="button">複製查房格式</button>
       </div>
       ${summaryClinicalTables(patient)}
@@ -303,10 +303,6 @@ function roundingSummary(patient) {
       </div>
       <p class="eyebrow">${escapeHtml(patient.message || "")}</p>
     </details>
-    <section class="rounding-safety">
-      <h3>查房前確認</h3>
-      ${roundingChecklist(patient, coverage)}
-    </section>
     <section class="source-status-panel">
       <h3>資料來源與擷取狀態</h3>
       ${table(["來源", "狀態", "最近結果"], sourceRows)}
@@ -570,7 +566,19 @@ function diagnosisLine(patient) {
 
 function historyLine(patient) {
   const rows = patient.clinicalContext?.aiIntegrated?.importantHistory || patient.clinicalContext?.pastHistory || [];
-  return rows.length ? rows.map((row) => row.label || row.text).join("；") : "尚未擷取";
+  if (rows.length) return rows.map((row) => row.label || row.text).filter(Boolean).join("；");
+  return historyLoadStatus(patient);
+}
+
+function historyLoadStatus(patient) {
+  const loaded = new Set(patient.loadedSources || []);
+  const results = new Map((patient.sourceResults || []).map((item) => [item.source, item]));
+  const failed = ["adult_assessment", "nursing"].find((source) => results.get(source)?.status === "error");
+  if (failed) return failed === "adult_assessment" ? "成人入院評估讀取失敗，請回原系統核對" : "護理入院評估讀取失敗，請回原系統核對";
+  if (!loaded.has("adult_assessment") || !loaded.has("nursing")) return "正在讀取入院評估與護理病史…";
+  const assessment = patient.clinicalContext?.adultAdmissionAssessment;
+  if (assessment?.pastHistoryStatus === "reported_none") return "成人入院評估記載無過去病史";
+  return "入院評估未提供過去病史";
 }
 
 function summarySurgery(rows) {
@@ -1031,6 +1039,13 @@ function clinicalContext(context, sources = []) {
   `;
 }
 
+function notePanel(patient) {
+  const notes = patient.clinicalContext?.noteSession || {};
+  const progress = Array.isArray(notes.progress) ? notes.progress : [];
+  const picker = progress.length ? `<label>Progress 日期 <select id="noteProgressPicker">${progress.map((row) => `<option value="${escapeHtml(row.id || "")}">${escapeHtml(row.date || "未提供日期")}</option>`).join("")}</select></label>` : `<span>目前沒有可選的 Progress 索引。</span>`;
+  return `<section class="record-block"><h3>OneRecord Note</h3><p>點選後才讀取原始文件；若原始系統未回應，會顯示「病歷尚未完成」。</p><div class="context-actions"><button class="note-open" data-note-type="admission" type="button">入院病摘</button><button class="note-open" data-note-type="progress" type="button" ${progress.length ? "" : "disabled"}>Progress</button><button class="note-open" data-note-type="discharge" type="button">出院病摘</button>${picker}</div><div id="noteDocument" class="empty-state">請選擇要檢視的病歷。</div></section>`;
+}
+
 function integratedDiagnosisContext(context, sources = []) {
   const integrated = context.aiIntegrated || {};
   return `
@@ -1051,12 +1066,33 @@ function integratedDiagnosisContext(context, sources = []) {
         <summary>來源證據與擷取狀態</summary>
         <h3>來源證據</h3>
         ${evidenceTable(integrated.evidence || [])}
+        <h3>手術術後診斷（僅作交叉支持／既往病史）</h3>
+        ${surgicalDiagnosisEvidence(context.surgicalDiagnosisEvidence || [])}
         <h3>成人入院評估單</h3>${adultAssessment(context.adultAdmissionAssessment)}
+        <h3>護理入院評估</h3>${nursingAdmissionAssessment(context.nursingAdmissionAssessment)}
         <h3>病摘與 Progress</h3>${noteSessionRecords(context.noteSession)}
         <h3>來源擷取工作台</h3>${sourceWorkbench(context.sourceExtracts || [])}
         <h3>資料來源狀態</h3>${table(["來源", "狀態", "用途"], (sources || []).map((row) => [row.source, row.status, row.usage]))}
       </details>
     </div>
+  `;
+}
+
+function nursingAdmissionAssessment(assessment) {
+  if (!assessment) return `<div class="empty-state">尚未讀取護理入院評估。</div>`;
+  const history = assessment.pastHistory
+    ? `<article class="record-item"><strong>擷取的過去病史</strong><pre>${escapeHtml(assessment.pastHistory)}</pre></article>`
+    : `<div class="empty-state compact">已讀取入院評估，但未找到可確認的過去病史。</div>`;
+  return `
+    <div class="assessment-grid">
+      <article class="record-item"><strong>紀錄時間</strong><div>${escapeHtml(assessment.time || "")}</div></article>
+      <article class="record-item"><strong>輸入者</strong><div>${escapeHtml(assessment.author || "")}</div></article>
+    </div>
+    ${history}
+    <details class="diagnosis-detail">
+      <summary>檢視首筆護理入院評估原文</summary>
+      <pre>${escapeHtml(assessment.rawNote || "")}</pre>
+    </details>
   `;
 }
 
@@ -1086,6 +1122,23 @@ function diagnosisBulletList(items, options = {}) {
       `).join("")}
     </ul>
   `;
+}
+
+function surgicalDiagnosisEvidence(items = []) {
+  if (!items.length) return `<div class="empty-state compact">尚未擷取可驗證的手術術後診斷。</div>`;
+  const effectLabel = {
+    current_support: "同次住院：交叉支持現有診斷",
+    past_history: "既往住院：列入過去病史",
+    review_only: "未驗證：僅供手術分頁人工核對",
+  };
+  return records(items.map((item) => ({
+    title: [item.date, item.diagnosis].filter(Boolean).join(" · ") || "手術術後診斷",
+    body: [
+      item.procedure && `手術：${item.procedure}`,
+      effectLabel[item.effect] || "未驗證",
+      item.admissionEvidence && `判定依據：${item.admissionEvidence}`,
+    ].filter(Boolean).join("；"),
+  })));
 }
 
 function diagnosisItems(items) {
@@ -1139,45 +1192,6 @@ function sourceWorkbench(sources) {
 function sourceList(items = []) {
   if (!items.length) return `<div class="empty-state">尚無資料。</div>`;
   return records(items.map((item) => ({ title: item.source, body: item.text })));
-}
-
-function aiAssessment(ai) {
-  if (!ai) return `<div class="empty-state">尚未產生 AI 判讀。</div>`;
-  return `
-    <div class="ai-banner"><strong>AI 輔助判讀</strong><span>請保留來源核對，不取代醫師判斷。</span></div>
-    <div class="context-actions"><button id="generateAi" type="button">重新產生 AI 判讀</button><span>目前是 rule-based，本機院內主機可再接 LLM。</span></div>
-    <pre class="summary-text">${escapeHtml(ai.summary)}</pre>
-    <section class="ai-trend-section">
-      <h3>抽血趨勢表</h3>
-      ${ai.labTrends?.length ? table(
-        ["項目", "最新", "前值", "變化", "參考值", "時間"],
-        ai.labTrends.map((row) => [
-          row.item,
-          labValueHtml(row),
-          row.previous || "",
-          trendLabel(row),
-          row.ref || "",
-          row.time || "",
-        ]),
-        "ai-trend-table"
-      ) : missingDataState()}
-    </section>
-    <div class="context-grid">
-      <section><h3>可能病情變化</h3>${bulletList(ai.priorities)}</section>
-      <section><h3>注意事項</h3>${bulletList(ai.cautions)}</section>
-    </div>
-  `;
-}
-
-function trendLabel(row = {}) {
-  const direction = row.direction === "up" ? "上升" : row.direction === "down" ? "下降" : row.direction === "flat" ? "持平" : "";
-  const delta = row.delta !== "" && row.delta !== undefined ? ` (${row.delta > 0 ? "+" : ""}${row.delta})` : "";
-  const className = row.direction ? `trend-${escapeHtml(row.direction)}` : "";
-  return direction ? `<span class="${className}">${escapeHtml(direction + delta)}</span>` : "";
-}
-
-function bulletList(items = []) {
-  return `<ul class="bullet-list">${items.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`;
 }
 
 function ioSummary(io) {
@@ -1259,7 +1273,15 @@ function ioDayRows(kind, date, records) {
     .filter(Boolean);
 }
 
-function renderGlucose(rows) {
+function renderGlucose(rows, result = null) {
+  if (!rows.length) {
+    const message = result?.status === "error"
+      ? `血糖資料讀取失敗：${result.message || "院內來源暫時無法回應。"}`
+      : result?.status === "ok"
+        ? "已完成血糖資料查詢；此病人在目前院內系統提供的日期區間內沒有血糖／胰島素紀錄。"
+        : "尚未載入血糖資料。請重新開啟此分頁後再試。";
+    return missingDataState(message);
+  }
   return table(
     ["血糖監測時間", "血糖值", "監測者", "注射時間", "藥物", "劑量", "施打部位", "Sliding Scale", "劑量", "注射者"],
     rows.map((row) => [
@@ -1276,6 +1298,10 @@ function renderGlucose(rows) {
     ]),
     "glucose-table"
   );
+}
+
+function sourceResult(patient, source) {
+  return (patient?.sourceResults || []).find((item) => item?.source === source) || null;
 }
 
 function ioWideTable(columns, records) {
@@ -1359,8 +1385,8 @@ function records(items) {
   return `<div class="record-list">${items.map((item) => `<article class="record-item"><strong>${escapeHtml(item.title)}</strong><div>${escapeHtml(item.body)}</div></article>`).join("")}</div>`;
 }
 
-function missingDataState() {
-  return `<div class="empty-state">尚未擷取資料。請輸入病歷號或床號查詢；若仍無資料，可能是 Onepage 登入已失效或此來源 parser 尚未接上。</div>`;
+function missingDataState(message = "尚未擷取資料。請輸入病歷號或床號查詢；若仍無資料，可能是 Onepage 登入已失效或此來源 parser 尚未接上。") {
+  return `<div class="empty-state">${escapeHtml(message)}</div>`;
 }
 
 function parseDisplayTime(value) {
@@ -1388,7 +1414,7 @@ async function loadPatient(query, options = {}) {
   return patient;
 }
 
-async function loadPatientDetails(query, expectedKey, sources = ["orders", "admission", "progress", "discharge", "adult_assessment"]) {
+async function loadPatientDetails(query, expectedKey, sources = ["orders", "admission", "progress", "discharge", "adult_assessment", "imaging", "surgeries", "pathology", "nursing"]) {
   const loadKey = `${expectedKey}:${[...sources].sort().join(",")}`;
   if (state.detailLoadingKey === loadKey) return;
   state.detailLoadingKey = loadKey;
@@ -1416,6 +1442,8 @@ function mergePatientLoad(patient, previous = {}) {
   patient.labHistory ||= previous.labHistory;
   patient.clinicalContext = { ...previous.clinicalContext, ...patient.clinicalContext };
   patient.loadedSources = [...new Set([...(previous.loadedSources || []), ...(patient.loadedSources || [])])];
+  patient.sourceResults = [...(patient.sourceResults || []), ...(previous.sourceResults || [])]
+    .filter((item, index, rows) => rows.findIndex((row) => row.source === item.source) === index);
 }
 
 async function openPhysicianRosterPatients() {
@@ -1658,14 +1686,27 @@ document.addEventListener("click", async (event) => {
     event.target.textContent = "擷取此來源";
   }
 
-  if (event.target?.id === "generateAi") {
+  if (event.target?.classList?.contains("note-open")) {
     if (!state.currentPatient) return;
-    event.target.disabled = true;
-    event.target.textContent = "產生中";
-    const ai = await api("/api/ai/assessment", { method: "POST", body: JSON.stringify({ patientRef: state.currentPatient.patientRef, patient: state.currentPatient }) });
-    state.currentPatient.aiAssessment = ai;
-    document.querySelector("#aiPanel").innerHTML = aiAssessment(ai);
+    const target = event.target;
+    const noteType = target.dataset.noteType;
+    const noteId = noteType === "progress" ? document.querySelector("#noteProgressPicker")?.value || "" : "";
+    target.disabled = true;
+    const result = await api("/api/patients/note", {
+      method: "POST",
+      body: JSON.stringify({ patientRef: state.currentPatient.patientRef || state.currentPatient.chartNo, noteType, noteId }),
+    });
+    const panel = document.querySelector("#noteDocument");
+    if (panel) {
+      if (result.status === "available" && result.embedUrl) {
+        panel.innerHTML = `<div class="record-item"><strong>${escapeHtml([result.note?.title, result.note?.date, result.note?.author].filter(Boolean).join(" · "))}</strong><iframe title="OneRecord Note" src="${escapeHtml(result.embedUrl)}" style="width:100%; min-height:70vh; border:0; margin-top:10px"></iframe></div>`;
+      } else {
+        panel.textContent = result.status === "unfinished" ? "病歷尚未完成" : (result.message || "OneRecord 文件暫時無法開啟。");
+      }
+    }
+    target.disabled = false;
   }
+
 });
 
 el.loginForm.addEventListener("submit", async (event) => {

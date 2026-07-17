@@ -431,8 +431,18 @@ button:disabled {
 
 .summary-text {
   white-space: pre-wrap;
-  line-height: 1.65;
-  margin: 0;
+  overflow-wrap: anywhere;
+  margin: 14px 0 0;
+  padding: 16px 18px;
+  border: 1px solid #c9e8e2;
+  border-left: 5px solid #0f9388;
+  border-radius: 10px;
+  background: #ffffff;
+  color: #163c3a;
+  font-family: inherit;
+  font-size: 1.08rem;
+  font-weight: 500;
+  line-height: 1.9;
 }
 
 .primary-summary {

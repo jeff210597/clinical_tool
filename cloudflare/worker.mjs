@@ -139,6 +139,11 @@ function normalizePayload(type, payload) {
     const endDate = String(payload.endDate || "").trim().slice(0, 64);
     return query ? { query, offset, ...(startDate ? { startDate } : {}), ...(endDate ? { endDate } : {}), ...(crypto ? { crypto } : {}) } : null;
   }
+  if (type === "session_refresh") {
+    // This carries no account material. The hospital agent reads its own
+    // Windows Credential Manager entry only after the existing PIN check.
+    return crypto ? { crypto } : {};
+  }
   if (type === "echo") {
     return { text: String(payload.text || "ping").slice(0, 200), ...(crypto ? { crypto } : {}) };
   }

@@ -2,7 +2,7 @@ import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildPatientFromQuery, buildPatientLabHistory } from "../server.mjs";
+import { buildPatientFromQuery, buildPatientLabHistory, isOnepageAuthenticationFailure, refreshOnepageSessionFromCredential } from "../server.mjs";
 import { fetchPhysicianInpatients } from "../parsers/onepage_physician_roster.mjs";
 
 const appDir = fileURLToPath(new URL("../", import.meta.url));
@@ -12,6 +12,7 @@ const relayAuditPath = join(localDir, "relay_audit.ndjson");
 const relayPatientCache = new Map();
 const relayPatientPromises = new Map();
 const RELAY_PATIENT_CACHE_TTL_MS = 5 * 60 * 1000;
+const RELAY_PATIENT_CACHE_VERSION = "surgery-episode-postop-diagnosis-v5";
 
 const LAB_PRIORITY = [
   "WBC",
@@ -46,7 +47,7 @@ export async function getRelayUser() {
 }
 
 export async function physicianRosterSummary(doctorId, user = null) {
-  const relayUser = user || await getRelayUser();
+  return withRelaySessionRecovery(user, async (relayUser) => {
   const roster = await fetchPhysicianInpatients({ doctorId, authToken: relayUser.onepageAuthToken || "" });
   const name = roster.physician?.name ? ` ${roster.physician.name}` : "";
   const lines = [`醫師住院清單｜${roster.physician?.id || doctorId}${name}`, roster.message || ""].filter(Boolean);
@@ -57,14 +58,15 @@ export async function physicianRosterSummary(doctorId, user = null) {
   }
   await appendRelayAudit({ actor: relayUser.username, action: "ward", doctorId, count: roster.patients?.length || 0, outcome: roster.status });
   return { text: lines.join("\n"), roster };
+  });
 }
 
 export async function patientRoundingSummary(query, user = null, options = {}) {
-  const relayUser = user || await getRelayUser();
+  return withRelaySessionRecovery(user, async (relayUser) => {
   const mode = ["quick", "details"].includes(options.mode) ? options.mode : "full";
   const sources = Array.isArray(options.sources) ? [...new Set(options.sources)].sort() : [];
   const sourceKey = sources.join(",");
-  const cacheKey = `${relayUser.username}:${mode}:${sourceKey}:${String(query || "").trim().toLowerCase()}`;
+  const cacheKey = `${RELAY_PATIENT_CACHE_VERSION}:${relayUser.username}:${mode}:${sourceKey}:${String(query || "").trim().toLowerCase()}`;
   const cached = relayPatientCache.get(cacheKey);
   if (!options.forceRefresh && cached && Date.now() - cached.cachedAt < RELAY_PATIENT_CACHE_TTL_MS) {
     await appendRelayAudit({ actor: relayUser.username, action: "summary_cache", patientRefHash: hashPatientRef(query), outcome: cached.patient.source });
@@ -82,13 +84,31 @@ export async function patientRoundingSummary(query, user = null, options = {}) {
   }
   await appendRelayAudit({ actor: relayUser.username, action: "summary", patientRefHash: hashPatientRef(query), outcome: resolvedPatient.source });
   return { text: formatPatientSummary(resolvedPatient), patient: resolvedPatient };
+  });
 }
 
 export async function patientLabHistory(query, options = {}, user = null) {
-  const relayUser = user || await getRelayUser();
+  return withRelaySessionRecovery(user, async (relayUser) => {
   const history = await buildPatientLabHistory(query, relayUser, options);
   await appendRelayAudit({ actor: relayUser.username, action: "labs", patientRefHash: hashPatientRef(query), outcome: "ok" });
   return history;
+  });
+}
+
+export async function refreshRelayOnepageSession() {
+  return refreshOnepageSessionFromCredential();
+}
+
+async function withRelaySessionRecovery(user, task) {
+  const relayUser = user || await getRelayUser();
+  try {
+    return await task(relayUser);
+  } catch (error) {
+    if (user || !(error?.code === "onepage_auth_invalid" || isOnepageAuthenticationFailure(error))) throw error;
+    await refreshOnepageSessionFromCredential();
+    // A single retry is intentional: it prevents a bad credential from creating a login loop.
+    return task(await getRelayUser());
+  }
 }
 
 export function hashPatientRef(value) {

@@ -101,6 +101,38 @@ $node="$env:USERPROFILE\.cache\codex-runtimes\codex-primary-runtime\dependencies
 & $node app\relay\cloudflare_poll_agent.mjs
 ```
 
+## Onepage automatic session recovery
+
+On the hospital workstation, configure the relay account once while signed in as
+the same Windows user that runs `cloudflare_poll_agent.mjs`:
+
+```powershell
+.\scripts\Manage-OnepageRelayCredential.ps1
+```
+
+The prompt stores the account/password only in that user's Windows Credential
+Manager entry (`ClinicalTool/OnepageRelay`). It is not written to `.env`, the
+session file, Cloudflare, D1, Netlify, browser storage, or relay logs.
+
+When an existing Onepage query receives an explicit authentication failure, the
+agent reads this local credential, logs in once, persists the new local session,
+and retries that original request once. Network, parsing, and other errors do
+not trigger login. Failed refreshes enter a 10-minute cooldown to avoid account
+lockouts. The phone's **重新連線 Onepage** button only sends a PIN-protected,
+ECDH-encrypted `session_refresh` request; it never accepts or displays Onepage
+credentials.
+
+Safe result codes are returned to the phone. The detailed refresh failure is
+recorded only in the hospital host's `app/.local/onepage_refresh_audit.ndjson`,
+created with owner-only file permissions.
+
+To update the credential, run the command above again. To revoke it on the
+hospital host:
+
+```powershell
+.\scripts\Manage-OnepageRelayCredential.ps1 -Remove
+```
+
 To keep the relay running after a process stop or the next sign-in, install its per-user watchdog:
 
 ```powershell

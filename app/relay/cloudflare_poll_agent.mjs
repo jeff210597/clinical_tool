@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { webcrypto } from "node:crypto";
 import { gzipSync } from "node:zlib";
-import { patientRoundingSummary, patientLabHistory, physicianRosterSummary } from "../services/relay_summary.mjs";
+import { patientRoundingSummary, patientLabHistory, physicianRosterSummary, refreshRelayOnepageSession } from "../services/relay_summary.mjs";
 
 const subtle = webcrypto.subtle;
 const MAX_RESPONSE_BYTES = 480 * 1024;
@@ -72,6 +72,8 @@ async function processRequest(request) {
       result = await patientRoundingSummary(request.payload?.query, null, request.payload || {});
     } else if (request.type === "labs") {
       result = await patientLabHistory(request.payload?.query, request.payload || {});
+    } else if (request.type === "session_refresh") {
+      result = await refreshRelayOnepageSession();
     } else {
       throw new Error(`Unsupported request type: ${request.type}`);
     }
@@ -90,19 +92,28 @@ async function processRequest(request) {
     });
     console.log(`cloudflare shadow request ${request.id} done (${request.type})`);
   } catch (error) {
-    const errorText = redact(error.message || error);
-    const encryptedError = await maybeEncryptResult(request, { ok: false, error: errorText }).catch(() => null);
+    const errorText = relaySafeError(error);
+    const encryptedError = await maybeEncryptResult(request, { ok: false, error: errorText.message, ...errorText }).catch(() => null);
     await shadowFetch("/api/cf-shadow/agent/respond", {
       method: "POST",
       body: JSON.stringify({
         id: request.id,
         status: "error",
-        error: encryptedError ? "encrypted_error" : errorText,
+        error: encryptedError ? "encrypted_error" : errorText.code,
         result: encryptedError,
       }),
     }).catch((postError) => console.error(`failed posting error result: ${redact(postError.message || postError)}`));
-    console.error(`cloudflare shadow request ${request.id} failed: ${errorText}`);
+    console.error(`cloudflare shadow request ${request.id} failed: ${errorText.code}`);
   }
+}
+
+function relaySafeError(error) {
+  const code = String(error?.code || "");
+  if (code === "onepage_refresh_cooldown") return { code, message: "Onepage automatic refresh is temporarily cooling down." };
+  if (code === "onepage_credential_missing") return { code, message: "Onepage relay credential is not configured on the hospital host." };
+  if (code === "onepage_refresh_failed") return { code, message: "Onepage session refresh failed on the hospital host." };
+  if (code === "missing_onepage_session") return { code, message: "Onepage session is unavailable on the hospital host." };
+  return { code: "relay_request_failed", message: "The hospital relay could not complete this request." };
 }
 
 async function maybeEncryptResult(request, result) {

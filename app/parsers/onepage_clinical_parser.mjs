@@ -28,6 +28,8 @@ export async function fetchOnepageClinicalSource({
   source,
   feeno,
   chartNo = "",
+  admissionStart = "",
+  admissionEnd = "",
   authToken,
   onepageBase = DEFAULT_ONEPAGE_BASE,
   appToken = process.env.ONEPAGE_APP_TOKEN || DEFAULT_APP_TOKEN,
@@ -44,7 +46,7 @@ export async function fetchOnepageClinicalSource({
     return fetchPathology({ feeno, chartNo, onepageBase, appToken, authToken, fetchImpl });
   }
   if (source === "surgeries") {
-    return fetchSurgeries({ feeno, chartNo, onepageBase, appToken, authToken, fetchImpl });
+    return fetchSurgeries({ feeno, chartNo, admissionStart, admissionEnd, onepageBase, appToken, authToken, fetchImpl });
   }
 
   const errors = [];
@@ -79,7 +81,7 @@ export async function fetchOnepageClinicalSource({
   throw new Error(errors.slice(0, 3).join(" | ") || "no Onepage endpoint returned data");
 }
 
-async function fetchSurgeries({ feeno, chartNo, onepageBase, appToken, authToken, fetchImpl }) {
+async function fetchSurgeries({ feeno, chartNo, admissionStart, admissionEnd, onepageBase, appToken, authToken, fetchImpl }) {
   const errors = [];
   let emptyResult = null;
   for (const endpoint of SOURCE_CONFIG.surgeries.endpoints) {
@@ -94,7 +96,7 @@ async function fetchSurgeries({ feeno, chartNo, onepageBase, appToken, authToken
       });
       const rows = toRows(payload);
       const enrichedRows = await enrichSurgeryRows({ rows, feeno, chartNo, onepageBase, appToken, authToken, fetchImpl });
-      const normalized = normalizeSurgeries(enrichedRows);
+      const normalized = filterSurgeriesForVerifiedPatient(normalizeSurgeries(enrichedRows), feeno, chartNo, admissionStart, admissionEnd);
       if (!normalized.length && !rows.length && !emptyResult) {
         emptyResult = { source: "surgeries", endpoint, rows: [], raw: [] };
       }
@@ -123,7 +125,7 @@ async function fetchPathology({ feeno, chartNo, onepageBase, appToken, authToken
         fetchImpl,
       });
       const rows = toRows(payload);
-      const normalized = normalizePathology(rows);
+      const normalized = filterPathologyForVerifiedPatient(normalizePathology(rows), feeno, chartNo);
       if (!normalized.length && !rows.length && !emptyResult) {
         emptyResult = { source: "pathology", endpoint, rows: [], raw: [] };
       }
@@ -154,13 +156,15 @@ async function fetchCombinedImaging({ feeno, chartNo, onepageBase, appToken, aut
       const payload = await postOnepageApi({
         onepageBase,
         path: endpoint,
-        params: sourceType === "Image" ? imageRequestParams(chartNo) : requestParams(feeno, chartNo),
+        params: sourceType === "Image"
+          ? imageRequestParams(feeno, chartNo)
+          : { ...requestParams(feeno, chartNo), current: false },
         appToken,
         authToken,
         fetchImpl,
       });
       let rows = toRows(payload).map((row) => ({ ...row, sourceType }));
-      const normalized = normalizeImaging(rows);
+      const normalized = filterImagingForPatient(normalizeImaging(rows), feeno, chartNo);
       if (normalized.length) {
         usedEndpoints.push(endpoint);
         allRows.push(...normalized);
@@ -249,7 +253,74 @@ function normalizeImaging(rows) {
     source: firstValue(row.sourceType, row.source) || "Image",
     impression: cleanReport(firstValue(row.impression, row.content, row.html_report, row.report, row.result, row.finding, row.findings, row.report_text, row.報告)),
     report: cleanReport(firstValue(row.content, row.html_report, row.report, row.result, row.finding, row.findings, row.report_text, row.報告)),
+    feeNo: firstValue(row.fee_no, row.feeno, row.feeNo),
+    chartNo: firstValue(row.chr_no, row.chart_no, row.chartNo),
   })).filter((row) => row.type || row.impression || row.report), (row) => row.date);
+}
+
+function filterImagingForPatient(rows, feeno, chartNo) {
+  const currentFeeNo = String(feeno || "").trim();
+  const currentChartNo = String(chartNo || "").trim();
+  return rows.flatMap((row) => {
+    if (!row.chartNo || String(row.chartNo) !== currentChartNo) return [];
+    if (row.feeNo) {
+      return [{
+        ...row,
+        admissionScope: String(row.feeNo) === currentFeeNo ? "current" : "history",
+      }];
+    }
+    // Keep unscoped data available for the image view, but never use it as
+    // historical diagnostic evidence because its admission cannot be verified.
+    return [{ ...row, admissionScope: "unverified" }];
+  });
+}
+
+function filterPathologyForVerifiedPatient(rows, feeno, chartNo) {
+  const currentFeeNo = String(feeno || "").trim();
+  const currentChartNo = String(chartNo || "").trim();
+  return rows.flatMap((row) => {
+    if (!row.chartNo || !row.feeNo || String(row.chartNo) !== currentChartNo) return [];
+    return [{
+      ...row,
+      admissionScope: String(row.feeNo) === currentFeeNo ? "current" : "history",
+    }];
+  });
+}
+
+function filterSurgeriesForVerifiedPatient(rows, feeno, chartNo, admissionStart = "", admissionEnd = "") {
+  const currentFeeNo = String(feeno || "").trim();
+  const currentChartNo = String(chartNo || "").trim();
+  return rows.flatMap((row) => {
+    const rowChartNo = String(row.chartNo || "").trim();
+    const rowFeeNo = String(row.feeNo || "").trim();
+    if (!rowChartNo || rowChartNo !== currentChartNo) {
+      return rowChartNo && rowChartNo !== currentChartNo ? [] : [{ ...row, admissionScope: "unverified", admissionEvidence: "missing_chart_no" }];
+    }
+    if (rowFeeNo) {
+      return [{ ...row, admissionScope: rowFeeNo === currentFeeNo ? "current" : "history", admissionEvidence: "fee_no" }];
+    }
+
+    // Some valid Onepage operation rows omit fee_no.  A matching chart number
+    // plus a dated operation inside this admission is sufficient to classify
+    // the episode, but never enough to infer a different patient's history.
+    const surgeryDay = parseClinicalDay(row.date);
+    const startDay = parseClinicalDay(admissionStart);
+    const endDay = parseClinicalDay(admissionEnd);
+    if (!surgeryDay || !startDay) return [{ ...row, admissionScope: "unverified", admissionEvidence: "missing_fee_no_or_date" }];
+    if (surgeryDay < startDay) return [{ ...row, admissionScope: "history", admissionEvidence: "date_before_current_admission" }];
+    if (endDay && surgeryDay > endDay) return [{ ...row, admissionScope: "unverified", admissionEvidence: "date_after_admission_window" }];
+    return [{ ...row, admissionScope: "current", admissionEvidence: "date_in_current_admission" }];
+  });
+}
+
+function parseClinicalDay(value) {
+  const match = String(value || "").match(/(\d{3,4})[/-](\d{1,2})[/-](\d{1,2})/);
+  if (!match) return "";
+  let year = Number(match[1]);
+  if (year >= 100 && year < 300) year += 1911;
+  const month = String(match[2]).padStart(2, "0");
+  const day = String(match[3]).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 
 function requestParams(feeno, chartNo) {
@@ -269,11 +340,13 @@ function labRequestParams(chartNo) {
   };
 }
 
-function imageRequestParams(chartNo) {
+function imageRequestParams(feeno, chartNo) {
   const value = String(chartNo || "").trim();
   return {
     chr_no: value,
     no: value,
+    fee_no: String(feeno || "").trim(),
+    feeno: String(feeno || "").trim(),
     content: true,
     current: false,
   };
@@ -520,6 +593,8 @@ function normalizeSurgeries(rows) {
       anesthesia: firstValue(row.anesthesia),
       codes: Array.isArray(row.code) ? row.code.join(", ") : firstValue(row.code),
       note: reportText || firstValue(row.note, row.summary, row.record, row.report, row.finding),
+      feeNo: firstValue(row.fee_no, row.feeno, row.feeNo),
+      chartNo: firstValue(row.chr_no, row.chart_no, row.chartNo),
     };
   }).filter((row) => row.date || row.procedure || row.note), (row) => row.date);
 }
@@ -592,6 +667,8 @@ function normalizePathology(rows) {
       report,
       specimen: firstValue(row.specimen, row.tissue, row.part, row.organ, row.檢體),
       clinicalInfo,
+      feeNo: firstValue(row.fee_no, row.feeno, row.feeNo),
+      chartNo: firstValue(row.chr_no, row.chart_no, row.chartNo),
     };
   }).filter((row) => row.date || row.type || row.diagnosis || row.report), (row) => row.date);
 }

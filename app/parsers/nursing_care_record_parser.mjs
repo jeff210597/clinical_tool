@@ -56,6 +56,84 @@ export function parseNursingCareRecords(html) {
   return records.sort((a, b) => parseTime(b.time) - parseTime(a.time));
 }
 
+// CareRecord is returned newest-first.  The first *useful* admission note is
+// more reliable than blindly using the first row: early rows can be a single
+// vital sign, teaching entry, or handover instead of the nursing assessment.
+export function selectNursingAdmissionAssessment(rows = []) {
+  const chronological = [...(Array.isArray(rows) ? rows : [])]
+    .filter((row) => String(row?.note || "").trim())
+    .sort((a, b) => parseTime(a.time) - parseTime(b.time));
+  if (!chronological.length) return null;
+
+  const meaningful = chronological.filter((row) => isMeaningfulAssessment(row.note));
+  const marked = chronological.find((row) => isAdmissionMarked(row.note) && String(row.note || "").trim().length >= 40);
+  const record = marked || meaningful[0] || null;
+  if (!record) return null;
+
+  const explicitHistory = extractPastHistory(record.note);
+  const historicalCourse = explicitHistory ? "" : extractHistoricalCourse(record.note);
+  const pastHistory = explicitHistory || historicalCourse;
+  return {
+    time: record.time || "",
+    author: record.author || "",
+    type: record.type || "護理紀錄",
+    rawNote: String(record.note || "").trim(),
+    pastHistory,
+    historyKind: explicitHistory ? "explicit_history" : (historicalCourse ? "historical_course" : "none"),
+    status: pastHistory ? "identified" : "no_confirmed_history",
+    source: historicalCourse ? "NIS 護理入院評估：既往病程" : "NIS 護理入院評估",
+  };
+}
+
+function isMeaningfulAssessment(note) {
+  const text = String(note || "").trim();
+  if (text.length < 80) return false;
+  if (/^(?:T|P|R|BP|SpO2|O)\s*[:：]/i.test(text) && text.length < 180) return false;
+  return true;
+}
+
+function isAdmissionMarked(note) {
+  return /\bAdmitted\s+at\b|入院(?:評估|紀錄|時|後)?|admission assessment/i.test(String(note || ""));
+}
+
+function extractPastHistory(note) {
+  const text = String(note || "").replace(/\r/g, "").trim();
+  const labels = [
+    "過去病史", "既往病史", "內科病史", "外科病史", "手術史",
+    "慢性病", "長期用藥", "藥物史", "過敏史", "PMH", "Past medical history",
+  ];
+  const labelPattern = labels.map(escapeRegExp).join("|");
+  const pattern = new RegExp(`(?:^|[\\n；;。])\\s*(${labelPattern})\\s*[:：]\\s*([\\s\\S]*?)(?=(?:[\\n；;。])\\s*(?:${labelPattern}|[SOAPHI])\\s*[:：]|$)`, "ig");
+  const sections = [];
+  for (const match of text.matchAll(pattern)) {
+    const value = cleanHistoryText(match[2]);
+    if (value) sections.push(`${match[1]}：${value}`);
+  }
+  return [...new Set(sections)].join("\n");
+}
+
+function extractHistoricalCourse(note) {
+  const sentences = String(note || "")
+    .split(/[\n；;。]+/)
+    .map((value) => value.trim())
+    .filter(Boolean);
+  const datePattern = /(?:\d{2,4}[/-]\d{1,2}[/-]\d{1,2}|\d{1,2}[/-]\d{1,2}|今年\d{1,2}月)/;
+  const coursePattern = /病理|切片|手術|化療|電療|放療|追蹤|術後|治療|診斷|adenocarcinoma|carcinoma|cancer/i;
+  const selected = sentences.filter((sentence) => datePattern.test(sentence) && coursePattern.test(sentence));
+  return [...new Set(selected)].join("；");
+}
+
+function cleanHistoryText(value) {
+  return String(value || "")
+    .replace(/\s+/g, " ")
+    .replace(/[；;]\s*$/, "")
+    .trim();
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function inferType(note) {
   const firstLine = String(note || "").split(/\n/).find(Boolean) || "";
   const match = firstLine.match(/^([^：:]{1,12}[：:])/);
