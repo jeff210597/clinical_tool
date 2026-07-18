@@ -1,5 +1,5 @@
 ﻿import { createServer } from "node:http";
-import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { access, appendFile, mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { createHash, randomBytes } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -25,6 +25,8 @@ const auditLogPath = join(localDir, "audit.ndjson");
 const onepageRefreshAuditPath = join(localDir, "onepage_refresh_audit.ndjson");
 const sessionStorePath = join(localDir, "sessions.json");
 const recentPatientsPath = join(localDir, "recent_patients.json");
+const shadowRelayDisabledPath = join(localDir, "cloudflare_shadow_relay.disabled.json");
+const shadowRelayWatchScript = join(__dirname, "..", "scripts", "Watch_Cloudflare_Relay.ps1");
 const host = process.env.API_HOST || "127.0.0.1";
 const port = Number(process.env.API_PORT || 8766);
 const sessionCookieName = "owb_session";
@@ -1122,6 +1124,38 @@ async function appendAudit({ actor, action, patientRef = "", outcome = "", detai
   await appendFile(auditLogPath, `${JSON.stringify(record)}\n`, { encoding: "utf8", mode: 0o600 });
 }
 
+async function shadowRelayControlState() {
+  const disabled = await pathExists(shadowRelayDisabledPath);
+  return {
+    enabled: !disabled,
+    mode: disabled ? "disabled_locally" : "enabled_or_starting",
+    note: disabled
+      ? "影子 relay 已停用；院內主機不會輪詢 Cloudflare。"
+      : "影子 relay 可由院內 watchdog 啟動並輪詢 Cloudflare。",
+  };
+}
+
+async function enableShadowRelay() {
+  await unlink(shadowRelayDisabledPath).catch((error) => {
+    if (error?.code !== "ENOENT") throw error;
+  });
+  await execFileAsync(
+    "powershell.exe",
+    ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", shadowRelayWatchScript],
+    { windowsHide: true, maxBuffer: 16 * 1024 },
+  );
+  return shadowRelayControlState();
+}
+
+async function pathExists(path) {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function routeApi(req, res, url) {
   if (req.method === "OPTIONS") {
     res.writeHead(204, {
@@ -1175,6 +1209,22 @@ async function routeApi(req, res, url) {
     const user = await requireUser(req, res);
     if (!user) return;
     json(res, 200, { ok: true, user: publicUser(user), onepage: readOnepageSessionMeta(user) });
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/shadow/relay-control") {
+    const user = await requireUser(req, res);
+    if (!user) return;
+    json(res, 200, await shadowRelayControlState());
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/shadow/relay-control/enable") {
+    const user = await requireUser(req, res);
+    if (!user) return;
+    const state = await enableShadowRelay();
+    await appendAudit({ actor: user.username, action: "shadow_relay_enable", outcome: state.mode });
+    json(res, 200, state);
     return;
   }
 

@@ -134,4 +134,16 @@ const refreshRequest = refreshPoll.requests.find((item) => item.id === refresh.i
 if (!refreshRequest || refreshRequest.type !== "session_refresh" || "username" in refreshRequest.payload || "password" in refreshRequest.payload) {
   throw new Error("session_refresh mailbox request was not safely normalized");
 }
+
+const stop = await request("POST", "https://example.test/api/cf-shadow/request", {
+  headers: { "x-shadow-pin": env.CF_SHADOW_PIN },
+  body: { type: "relay_control", payload: { action: "disable", crypto: { ecdhPublicKey: "b".repeat(120) } } },
+});
+const stopPoll = await request("GET", "https://example.test/api/cf-shadow/agent/poll", {
+  headers: { "x-relay-key": env.CF_SHADOW_RELAY_KEY },
+});
+const stopRequest = stopPoll.requests.find((item) => item.id === stop.id);
+if (!stopRequest || stopRequest.type !== "relay_control" || stopRequest.payload?.action !== "disable") {
+  throw new Error("relay stop request was not safely normalized");
+}
 console.log("Cloudflare POC worker smoke test OK");

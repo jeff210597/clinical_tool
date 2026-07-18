@@ -141,6 +141,18 @@ To keep the relay running after a process stop or the next sign-in, install its 
 
 The watchdog checks once per minute and starts the relay only when it is absent. It uses outbound HTTPS polling only; it does not open ports, modify firewall rules, or create a tunnel.
 
+## Explicit stop mode
+
+The shadow page has a **停止影子連線** button. It sends one PIN-protected,
+ECDH-encrypted stop request. After the hospital relay acknowledges it, it writes
+`app/.local/cloudflare_shadow_relay.disabled.json` and exits. The watchdog
+honors that local flag, so no further Cloudflare polling is made.
+
+The public shadow page cannot re-enable a fully stopped relay: a remote wake-up
+path would itself require continuing outbound polling or an inbound channel.
+Re-enable only from the authenticated hospital LAN workstation using
+**啟用影子連線**. This removes the local flag and starts the normal relay.
+
 For connection-only testing, run `cloudflare_poll_agent.mjs --echo-only`. Remove echo-only mode for real workstation queries.
 
 ## Safety Checklist Before Clinical Use

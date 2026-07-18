@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>影子查房工作台</title>
-    <link rel="stylesheet" href="/styles.css?v=clinical-notes-1" />
+    <link rel="stylesheet" href="/styles.css?v=shadow-relay-control-1" />
   </head>
   <body>
     <div class="app-shell">
@@ -33,7 +33,7 @@
         <section><div class="section-title"><span>最近擷取</span><button id="reloadRecent" class="icon-button" type="button" title="重新整理最近擷取清單">↻</button></div><p id="recentStatus" class="eyebrow">重整只更新左側清單。</p><div id="recentList" class="patient-list"></div></section>
       </aside>
       <main class="content">
-        <header class="patient-header"><div><p class="eyebrow">目前病人</p><h2 id="patientTitle">尚未選擇</h2><p id="patientMeta">請先輸入影子工作站 PIN 後再查詢。</p></div><div class="actions"><button id="refreshOnepage" type="button" disabled>重新連線 Onepage</button><button id="refreshPatient" type="button" disabled>重新整理</button><button id="copySummary" type="button" disabled>複製摘要</button></div></header>
+        <header class="patient-header"><div><p class="eyebrow">目前病人</p><h2 id="patientTitle">尚未選擇</h2><p id="patientMeta">請先輸入影子工作站 PIN 後再查詢。</p></div><div class="actions"><button id="disableShadowRelay" class="danger-action" type="button" disabled>停止影子連線</button><button id="refreshOnepage" type="button" disabled>重新連線 Onepage</button><button id="refreshPatient" type="button" disabled>重新整理</button><button id="copySummary" type="button" disabled>複製摘要</button></div></header>
         <div id="patientWindowTabs" class="patient-window-tabs" aria-label="已開啟病人"></div>
         <div id="warningStrip" class="warning-strip is-hidden"></div>
         <nav class="tabs" aria-label="資料分頁">
@@ -41,6 +41,6 @@
         </nav><section id="summaryPanel" class="panel" data-panel="summary"><div class="empty-state">請先輸入 PIN，再選擇病人。</div></section>
         <section id="contextPanel" class="panel is-hidden" data-panel="context"></section><section id="ordersPanel" class="panel is-hidden" data-panel="orders"></section><section id="tprPanel" class="panel is-hidden" data-panel="tpr"></section><section id="labsPanel" class="panel is-hidden" data-panel="labs"></section><section id="imagingPanel" class="panel is-hidden" data-panel="imaging"></section><section id="surgeryPanel" class="panel is-hidden" data-panel="surgery"></section><section id="pathologyPanel" class="panel is-hidden" data-panel="pathology"></section><section id="ioPanel" class="panel is-hidden" data-panel="io"></section><section id="nursingPanel" class="panel is-hidden" data-panel="nursing"></section><section id="glucosePanel" class="panel is-hidden" data-panel="glucose"></section><section id="notePanel" class="panel is-hidden" data-panel="note"></section></main>
     </div>
-    <script src="/app.js?v=clinical-history-state-1"></script>
+    <script src="/app.js?v=shadow-relay-control-1"></script>
   </body>
 </html>

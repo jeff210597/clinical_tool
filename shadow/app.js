@@ -36,6 +36,7 @@ const el = {
   patientWindowTabs: document.querySelector("#patientWindowTabs"),
   refreshPatient: document.querySelector("#refreshPatient"),
   refreshOnepage: document.querySelector("#refreshOnepage"),
+  disableShadowRelay: document.querySelector("#disableShadowRelay"),
   copySummary: document.querySelector("#copySummary"),
   warningStrip: document.querySelector("#warningStrip"),
   tabs: [...document.querySelectorAll(".tab")],
@@ -125,6 +126,10 @@ async function api(path, options = {}) {
     return createShadowRequest("session_refresh", {});
   }
 
+  if (path === "/api/shadow/relay-disable") {
+    return createShadowRequest("relay_control", { action: "disable" });
+  }
+
   const response = await fetch(path, {
     headers: { "content-type": "application/json" },
     credentials: "same-origin",
@@ -188,6 +193,28 @@ async function refreshShadowOnepageSession() {
     throw error;
   } finally {
     el.refreshOnepage.disabled = !state.user;
+  }
+}
+
+async function disableShadowRelay() {
+  if (!state.user) throw new Error("請先輸入影子工作站 PIN。");
+  const confirmed = window.confirm("停止後院內主機將不再輪詢 Cloudflare，影子頁無法自行重新啟用。是否停止？");
+  if (!confirmed) return;
+  el.disableShadowRelay.disabled = true;
+  el.disableShadowRelay.textContent = "停止中…";
+  el.serviceStatus.textContent = "正在停止院內影子 relay…";
+  try {
+    const result = await api("/api/shadow/relay-disable", { method: "POST", body: "{}" });
+    if (!result?.ok || result.code !== "shadow_relay_disabled") throw new Error("院內主機未確認影子 relay 已停止。");
+    el.serviceStatus.textContent = "影子連線已停止";
+    el.patientMeta.textContent = "院內主機已停止 Cloudflare polling；需在院內 LAN 工作台重新啟用。";
+    el.disableShadowRelay.textContent = "影子連線已停止";
+    el.refreshOnepage.disabled = true;
+    el.refreshPatient.disabled = true;
+  } catch (error) {
+    el.disableShadowRelay.disabled = !state.user;
+    el.disableShadowRelay.textContent = "停止影子連線";
+    throw error;
   }
 }
 
@@ -372,6 +399,7 @@ function renderAuth() {
   el.refreshRosterPatients.disabled = !loggedIn || !state.physicianRoster.length;
   el.reloadRecent.disabled = !loggedIn;
   el.refreshOnepage.disabled = !loggedIn;
+  el.disableShadowRelay.disabled = !loggedIn;
   if (loggedIn) {
     el.currentUserLabel.textContent = `${state.user.displayName || state.user.username} 已解鎖`;
   } else {
@@ -1995,6 +2023,7 @@ el.openRosterPatients.addEventListener("click", openPhysicianRosterPatients);
 el.refreshRosterPatients.addEventListener("click", refreshPhysicianRosterSummaries);
 el.refreshPatient.addEventListener("click", refreshPatient);
 el.refreshOnepage.addEventListener("click", () => refreshShadowOnepageSession().catch(() => null));
+el.disableShadowRelay.addEventListener("click", () => disableShadowRelay().catch((error) => { el.serviceStatus.textContent = error.message || "無法停止影子連線"; }));
 document.addEventListener("click", async (event) => {
   if (event.target?.id !== "copyStructuredSummary" || !state.currentPatient) return;
   const note = buildStructuredRoundingNote(state.currentPatient, buildCoverage(state.currentPatient));

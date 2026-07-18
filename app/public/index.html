@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Onepage 查房工作台</title>
-    <link rel="stylesheet" href="/styles.css?v=clinical-notes-1" />
+    <link rel="stylesheet" href="/styles.css?v=shadow-relay-control-1" />
   </head>
   <body>
     <div class="app-shell">
@@ -19,7 +19,7 @@
             <button type="submit">登入 Onepage</button>
             <p id="loginMessage" class="eyebrow">密碼僅用於這次登入，不會保存在工作台。</p>
           </form>
-          <div id="userPanel" class="user-panel is-hidden"><span id="currentUserLabel"></span><button id="logoutButton" type="button">登出</button></div>
+          <div id="userPanel" class="user-panel is-hidden"><span id="currentUserLabel"></span><button id="enableShadowRelay" type="button" title="僅在影子 relay 已停用時啟動">啟用影子連線</button><button id="logoutButton" type="button">登出</button></div>
         </section>
         <form id="searchForm" class="search"><label for="patientQuery">病歷號 / 床號 / 住院序號</label><div class="search-row"><input id="patientQuery" name="patientQuery" autocomplete="off" placeholder="輸入病歷號或床號" /><button type="submit">查詢</button></div></form>
         <section class="roster-panel">
@@ -42,6 +42,6 @@
         </nav><section id="summaryPanel" class="panel" data-panel="summary"><div class="empty-state">請先以 Onepage 帳號登入，再選擇病人。</div></section>
         <section id="contextPanel" class="panel is-hidden" data-panel="context"></section><section id="ordersPanel" class="panel is-hidden" data-panel="orders"></section><section id="tprPanel" class="panel is-hidden" data-panel="tpr"></section><section id="labsPanel" class="panel is-hidden" data-panel="labs"></section><section id="imagingPanel" class="panel is-hidden" data-panel="imaging"></section><section id="surgeryPanel" class="panel is-hidden" data-panel="surgery"></section><section id="pathologyPanel" class="panel is-hidden" data-panel="pathology"></section><section id="ioPanel" class="panel is-hidden" data-panel="io"></section><section id="nursingPanel" class="panel is-hidden" data-panel="nursing"></section><section id="glucosePanel" class="panel is-hidden" data-panel="glucose"></section><section id="notePanel" class="panel is-hidden" data-panel="note"></section></main>
     </div>
-    <script src="/app.js?v=clinical-notes-1"></script>
+    <script src="/app.js?v=shadow-relay-control-1"></script>
   </body>
 </html>

@@ -3,6 +3,7 @@ $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $LocalDir = Join-Path $Root "app\.local"
 $LogPath = Join-Path $LocalDir "cloudflare_relay_watchdog.log"
+$DisabledPath = Join-Path $LocalDir "cloudflare_shadow_relay.disabled.json"
 $Node = Join-Path $env:USERPROFILE ".cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe"
 
 if (-not (Test-Path $Node)) { $Node = "node.exe" }
@@ -16,6 +17,11 @@ function Write-WatchdogLog {
 function Get-RelayProcess {
   Get-CimInstance Win32_Process -Filter "Name='node.exe'" -ErrorAction SilentlyContinue |
     Where-Object { $_.CommandLine -match "app[\\/]relay[\\/]cloudflare_poll_agent\.mjs(?:\s|$)" }
+}
+
+if (Test-Path $DisabledPath) {
+  Write-WatchdogLog "disabled by local control flag"
+  exit 0
 }
 
 $running = @(Get-RelayProcess)

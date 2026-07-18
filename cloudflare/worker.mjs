@@ -144,6 +144,12 @@ function normalizePayload(type, payload) {
     // Windows Credential Manager entry only after the existing PIN check.
     return crypto ? { crypto } : {};
   }
+  if (type === "relay_control") {
+    // The only remote relay-control operation is an explicit stop. A stopped
+    // relay has no remote wake-up path by design, so re-enabling remains a
+    // deliberate action on the hospital LAN workstation.
+    return payload.action === "disable" && crypto ? { action: "disable", crypto } : null;
+  }
   if (type === "echo") {
     return { text: String(payload.text || "ping").slice(0, 200), ...(crypto ? { crypto } : {}) };
   }

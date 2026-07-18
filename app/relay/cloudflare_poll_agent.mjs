@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { webcrypto } from "node:crypto";
 import { gzipSync } from "node:zlib";
 import { patientRoundingSummary, patientLabHistory, physicianRosterSummary, refreshRelayOnepageSession } from "../services/relay_summary.mjs";
@@ -7,6 +7,7 @@ const subtle = webcrypto.subtle;
 const MAX_RESPONSE_BYTES = 480 * 1024;
 const DEFAULT_POLL_INTERVAL_MS = 1500;
 const MIN_POLL_INTERVAL_MS = 1500;
+const relayDisabledPath = new URL("../.local/cloudflare_shadow_relay.disabled.json", import.meta.url);
 
 await loadEnvFile(new URL("../.env", import.meta.url));
 await loadEnvFile(new URL("../../.env", import.meta.url));
@@ -57,6 +58,7 @@ async function pollOnce() {
 async function processRequest(request) {
   try {
     let result = null;
+    let stopAfterResponse = false;
     if (request.type === "echo") {
       result = {
         ok: true,
@@ -74,6 +76,9 @@ async function processRequest(request) {
       result = await patientLabHistory(request.payload?.query, request.payload || {});
     } else if (request.type === "session_refresh") {
       result = await refreshRelayOnepageSession();
+    } else if (request.type === "relay_control" && request.payload?.action === "disable") {
+      result = await disableShadowRelay();
+      stopAfterResponse = true;
     } else {
       throw new Error(`Unsupported request type: ${request.type}`);
     }
@@ -91,6 +96,10 @@ async function processRequest(request) {
       body: responseBody,
     });
     console.log(`cloudflare shadow request ${request.id} done (${request.type})`);
+    if (stopAfterResponse) {
+      console.log("Cloudflare shadow relay disabled locally; stopping outbound polling.");
+      process.exit(0);
+    }
   } catch (error) {
     const errorText = relaySafeError(error);
     const encryptedError = await maybeEncryptResult(request, { ok: false, error: errorText.message, ...errorText }).catch(() => null);
@@ -105,6 +114,18 @@ async function processRequest(request) {
     }).catch((postError) => console.error(`failed posting error result: ${redact(postError.message || postError)}`));
     console.error(`cloudflare shadow request ${request.id} failed: ${errorText.code}`);
   }
+}
+
+async function disableShadowRelay() {
+  await mkdir(new URL("../.local/", import.meta.url), { recursive: true });
+  const disabledAt = new Date().toISOString();
+  await writeFile(relayDisabledPath, `${JSON.stringify({ disabledAt, source: "shadow_remote_control" })}\n`, { encoding: "utf8", mode: 0o600 });
+  return {
+    ok: true,
+    code: "shadow_relay_disabled",
+    disabledAt,
+    message: "Shadow relay is disabled on the hospital host. Outbound Cloudflare polling has stopped.",
+  };
 }
 
 function relaySafeError(error) {

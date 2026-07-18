@@ -122,6 +122,15 @@ after sign-in or a process stop, run once:
 This installer creates a per-user background watchdog. It does not create an
 inbound listener, modify firewall rules, or create a tunnel.
 
+## Stop and re-enable the shadow relay
+
+The public shadow page can explicitly stop the relay after PIN verification.
+Once stopped, the hospital host no longer polls Cloudflare and the watchdog
+will not restart it. Re-enable only from the authenticated hospital LAN
+workstation using **啟用影子連線**; this deliberate LAN-only action removes the
+local stop flag and starts the relay again. A fully stopped relay cannot be
+remotely woken without retaining a network control path.
+
 ## Redeploy Netlify Shadow Site
 
 If the Netlify site needs redeployment, provide a Netlify personal access token locally in `netlify token.txt`, then deploy with the current source package and Netlify API flow.

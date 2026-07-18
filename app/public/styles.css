@@ -156,6 +156,12 @@ button:disabled {
   padding: 0 10px;
 }
 
+#enableShadowRelay:not(:disabled) {
+  background: #0f766e;
+  border-color: #0f766e;
+  color: #fff;
+}
+
 .search label {
   display: block;
   margin-bottom: 8px;

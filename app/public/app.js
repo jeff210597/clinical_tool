@@ -30,6 +30,7 @@ const el = {
   userPanel: document.querySelector("#userPanel"),
   currentUserLabel: document.querySelector("#currentUserLabel"),
   logoutButton: document.querySelector("#logoutButton"),
+  enableShadowRelay: document.querySelector("#enableShadowRelay"),
   patientTitle: document.querySelector("#patientTitle"),
   patientMeta: document.querySelector("#patientMeta"),
   patientWindowTabs: document.querySelector("#patientWindowTabs"),
@@ -76,6 +77,7 @@ function renderAuth() {
   el.openRosterPatients.disabled = !loggedIn || !state.physicianRoster.length;
   el.refreshRosterPatients.disabled = !loggedIn || !state.physicianRoster.length;
   el.reloadRecent.disabled = !loggedIn;
+  el.enableShadowRelay.disabled = !loggedIn;
   if (loggedIn) {
     el.currentUserLabel.textContent = `${state.user.displayName || state.user.username} 已登入`;
   } else {
@@ -93,6 +95,32 @@ async function refreshAuth() {
     state.user = null;
   }
   renderAuth();
+}
+
+async function refreshShadowRelayControl() {
+  if (!state.user || !el.enableShadowRelay) return;
+  try {
+    const relay = await api("/api/shadow/relay-control");
+    el.enableShadowRelay.textContent = relay.enabled ? "影子連線已啟用" : "啟用影子連線";
+    el.enableShadowRelay.disabled = relay.enabled;
+    el.enableShadowRelay.title = relay.note || "";
+  } catch {
+    el.enableShadowRelay.textContent = "啟用影子連線";
+  }
+}
+
+async function enableShadowRelay() {
+  if (!state.user) return;
+  el.enableShadowRelay.disabled = true;
+  el.enableShadowRelay.textContent = "啟動中…";
+  try {
+    const relay = await api("/api/shadow/relay-control/enable", { method: "POST", body: "{}" });
+    el.enableShadowRelay.textContent = relay.enabled ? "影子連線已啟用" : "啟用影子連線";
+    el.enableShadowRelay.title = relay.note || "";
+  } catch (error) {
+    el.enableShadowRelay.textContent = "啟用失敗";
+    el.enableShadowRelay.title = error.message || "無法啟動影子 relay";
+  }
 }
 
 function updateRecentStatus(text) {
@@ -1768,6 +1796,7 @@ el.reloadRecent.addEventListener("click", async () => {
 el.openRosterPatients.addEventListener("click", openPhysicianRosterPatients);
 el.refreshRosterPatients.addEventListener("click", refreshPhysicianRosterSummaries);
 el.refreshPatient.addEventListener("click", refreshPatient);
+el.enableShadowRelay.addEventListener("click", enableShadowRelay);
 document.addEventListener("click", async (event) => {
   if (event.target?.id !== "copyStructuredSummary" || !state.currentPatient) return;
   const note = buildStructuredRoundingNote(state.currentPatient, buildCoverage(state.currentPatient));
@@ -1817,7 +1846,9 @@ api("/api/health")
     el.serviceStatus.textContent = "服務未連線";
   });
 
-refreshAuth().then(loadRecent).catch(() => {
+refreshAuth().then(async () => {
+  await Promise.all([loadRecent(), refreshShadowRelayControl()]);
+}).catch(() => {
   renderAuth();
   el.recentList.innerHTML = `<div class="empty-state compact">讀取失敗。</div>`;
 });
